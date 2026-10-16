@@ -1,0 +1,194 @@
+From a8f8f3a8b28f46473c5f485b0dc517195499dca5 Mon Sep 17 00:00:00 2001
+From: Patrick Damouni <patrick.damouni@icloud.com>
+Date: Fri, 16 Oct 2026 11:49:01 -0400
+Subject: [PATCH] Fix bitfieldInsert parenthesization and full-width bitfield
+ masks in C-like emitters
+
+bitfieldInsert's expansion '(base & ~mask) | (insert << off)' was not
+parenthesized, so a folded swizzle such as bitfieldInsert(a, b, o, n).y bound
+only to the right operand of '|'. On Metal this silently produced wrong lanes,
+and '.xy' failed to compile on Metal and C++.
+
+bitfieldExtract and bitfieldInsert built the mask as '(1 << bits) - 1', which
+shifts by the full width when bits equals the bit width; Metal returned 0 for
+bitfieldExtract(x, 0, 32). The mask is now built without a full-width shift.
+
+Adds tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang.
+---
+ source/slang/slang-emit-c-like.cpp            | 58 ++++++++++++++----
+ .../bitfield-full-width-and-swizzle.slang     | 59 +++++++++++++++++++
+ 2 files changed, 106 insertions(+), 11 deletions(-)
+ create mode 100644 tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang
+
+diff --git a/source/slang/slang-emit-c-like.cpp b/source/slang/slang-emit-c-like.cpp
+index 626596f..f3e3513 100644
+--- a/source/slang/slang-emit-c-like.cpp
++++ b/source/slang/slang-emit-c-like.cpp
+@@ -4298,6 +4298,31 @@ String CLikeSourceEmitter::_emitLiteralOneWithType(int bitWidth)
+     return one;
+ }
+ 
++// Emits an expression for a mask with the low `bts` bits set, valid for every `bts` in
++// [0, bitWidth]. For example, `bitfieldExtract(x, 0, 32)` needs the all-ones mask.
++// We do not emit the textbook `(1 << bts) - 1`, because when `bts` equals the bit width the
++// shift amount equals the width, which is undefined in C, C++, MSL and HLSL (Metal evaluates
++// `bitfieldExtract(x, 0, 32)` to 0). Instead we emit
++//     ((1 << (bts & (W-1))) - 1) | (0 - (bts >> log2(W)))
++// whose second term is all ones exactly when `bts == W` and zero otherwise, so no shift reaches
++// the bit width and the expression needs no conditional operator, which WGSL lacks.
++static void _emitBitfieldMask(
++    SourceWriter* writer,
++    const String& one,
++    int bitWidth,
++    const std::function<void()>& emitBits)
++{
++    int log2Width = 0;
++    while ((1 << log2Width) < bitWidth)
++        log2Width++;
++    SLANG_ASSERT((1 << log2Width) == bitWidth);
++    writer->emit("(((" + one + "<<((");
++    emitBits();
++    writer->emit(")&" + String(bitWidth - 1) + "))-" + one + ")|((" + one + "-" + one + ")-((");
++    emitBits();
++    writer->emit(")>>" + String(log2Width) + ")))");
++}
++
+ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
+ {
+     // If unsigned, bfue := ((val>>off)&((1u<<bts)-1))
+@@ -4380,9 +4405,11 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
+         vectorTypeForShiftNumber,
+         [&]()
+         {
+-            m_writer->emit("((" + one + "<<");
+-            emitOperand(bts, getInfo(EmitOp::General));
+-            m_writer->emit(")-" + one + ")");
++            _emitBitfieldMask(
++                m_writer,
++                one,
++                bitWidth,
++                [&]() { emitOperand(bts, getInfo(EmitOp::General)); });
+         });
+     m_writer->emit("))");
+ 
+@@ -4463,6 +4490,10 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+ 
+     String one = _emitLiteralOneWithType(bitWidth);
+ 
++    // We parenthesize the whole expansion because its top-level operator is `|`. When the
++    // instruction is folded into a use such as a swizzle, as in `bitfieldInsert(a, b, o, n).y`,
++    // the postfix operator would otherwise bind only to the right operand of `|`.
++    m_writer->emit("(");
+     if (isSigned)
+     {
+         emitType(inst->getDataType());
+@@ -4490,11 +4521,13 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+         vectorTypeForShiftNumber,
+         [&]()
+         {
+-            m_writer->emit("~(((" + one + "<<");
+-            emitOperand(bts, getInfo(EmitOp::General));
+-
+-            m_writer->emit(")-" + one + ")<<");
+-
++            m_writer->emit("~(");
++            _emitBitfieldMask(
++                m_writer,
++                one,
++                bitWidth,
++                [&]() { emitOperand(bts, getInfo(EmitOp::General)); });
++            m_writer->emit("<<");
+             emitOperand(off, getInfo(EmitOp::General));
+             m_writer->emit(")");
+         });
+@@ -4522,9 +4555,11 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+         vectorTypeForShiftNumber,
+         [&]()
+         {
+-            m_writer->emit("(" + one + "<<");
+-            emitOperand(bts, getInfo(EmitOp::General));
+-            m_writer->emit(")-" + one);
++            _emitBitfieldMask(
++                m_writer,
++                one,
++                bitWidth,
++                [&]() { emitOperand(bts, getInfo(EmitOp::General)); });
+         });
+     m_writer->emit(")");
+ 
+@@ -4539,6 +4574,7 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+     {
+         m_writer->emit(")");
+     }
++    m_writer->emit(")");
+ }
+ 
+ void CLikeSourceEmitter::emitStruct(IRStructType* structType)
+diff --git a/tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang b/tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang
+new file mode 100644
+index 0000000..edaeb56
+--- /dev/null
++++ b/tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang
+@@ -0,0 +1,59 @@
++// Regression test for two bugs in the C-like emitters' bitfield expansion:
++//  1. bitfieldExtract/bitfieldInsert with bits == bit width built the mask as
++//     `(1 << bits) - 1`, a full-width shift that is undefined in C/C++/MSL/HLSL
++//     (Metal returned 0 for bitfieldExtract(x, 0, 32)).
++//  2. The bitfieldInsert expansion `(base & ~mask) | (insert << off)` was not
++//     parenthesized, so a folded swizzle bound only to the right operand of `|`
++//     (Metal returned the wrong lanes; `.xy` failed to compile on Metal and C++).
++// Offset and bit count come from a buffer so they are not constant-folded.
++
++//TEST(compute):COMPARE_COMPUTE(filecheck-buffer=CHECK):-vk -compile-arg -skip-spirv-validation -emit-spirv-directly
++//TEST(compute):COMPARE_COMPUTE(filecheck-buffer=CHECK):-dx12
++//TEST(compute):COMPARE_COMPUTE(filecheck-buffer=CHECK):-mtl
++//TEST(compute):COMPARE_COMPUTE(filecheck-buffer=CHECK):-cpu
++//TEST(compute):COMPARE_COMPUTE(filecheck-buffer=CHECK):-cuda
++//TEST(compute):COMPARE_COMPUTE(filecheck-buffer=CHECK):-wgpu
++
++// CHECK: DEADBEEF
++// CHECK-NEXT: BADF00D
++// CHECK-NEXT: DEADBEEF
++// CHECK-NEXT: 222220B2
++// CHECK-NEXT: 111110A1
++// CHECK-NEXT: 222220B2
++// CHECK-NEXT: EE
++// CHECK-NEXT: DEADB0DF
++
++//TEST_INPUT:ubuffer(data=[0 32 4 8], stride=4):name=params
++StructuredBuffer<uint> params;
++
++//TEST_INPUT:ubuffer(data=[0 0 0 0 0 0 0 0], stride=4):out,name=outputBuffer
++RWStructuredBuffer<uint> outputBuffer;
++
++[numthreads(1, 1, 1)]
++void computeMain()
++{
++    uint fullOff = params[0];  // 0
++    uint fullBits = params[1]; // 32
++    uint off = params[2];      // 4
++    uint bits = params[3];     // 8
++
++    uint v = 0xDEADBEEF;
++    uint ins = 0x0BADF00D;
++
++    // Full-width operations.
++    outputBuffer[0] = bitfieldExtract(v, fullOff, fullBits);
++    outputBuffer[1] = bitfieldInsert(v, ins, fullOff, fullBits);
++    outputBuffer[2] = uint(bitfieldExtract(int(v), fullOff, fullBits));
++
++    // A swizzle applied directly to an inlined vector bitfieldInsert.
++    uint4 a = uint4(0x11111111, 0x22222222, 0x33333333, 0x44444444);
++    uint4 b = uint4(0xA, 0xB, 0xC, 0xD);
++    outputBuffer[3] = bitfieldInsert(a, b, off, bits).y;
++    uint2 xy = bitfieldInsert(a, b, off, bits).xy;
++    outputBuffer[4] = xy.x;
++    outputBuffer[5] = xy.y;
++
++    // Ordinary widths still work.
++    outputBuffer[6] = bitfieldExtract(v, off, bits);
++    outputBuffer[7] = bitfieldInsert(v, ins, off, bits);
++}
+-- 
+2.54.0
+

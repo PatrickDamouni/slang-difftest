@@ -75,6 +75,18 @@ The harness proves itself before it reports anything (`make selftest`):
 - a fault planted in the Metal path only is caught and blamed on "Slang Metal codegen";
 - a fault planted in the SPIR-V path only is blamed on "Slang SPIR-V codegen".
 
+## Verified fix for A and B
+
+I patched `source/slang/slang-emit-c-like.cpp` on Slang `master` (3a93b38), built `slangc` from source and re-ran everything. The patch and a PR description are in `docs/upstream/`, **not submitted**.
+
+| check | unpatched master | patched |
+|---|---|---|
+| `python3 -m difftest.repros` (A, B1, B2) | FAIL ×3 | **PASS ×3** (C is a KosmicKrisp bug and still fails, as expected) |
+| bitfield family, 320 functions (same seeds) | 129 Metal mismatches, 10 Metal rejects, 10 C++ errors | **0 findings** |
+| all families, 1,280 functions (same seeds) | 117 Metal mismatches, 12 rejects | **0 Metal findings**; the 40 C++ errors left are all #13553 (signed/unsigned vector mismatch) |
+| new regression test `bitfield-full-width-and-swizzle.slang`, run on Metal | does not compile | **8/8 checks pass** |
+| Slang's own `bitfield-extract.slang` | — | compiles for Metal, C++, DXIL, WGSL |
+
 ## Not claimed
 
 - **No upstream reports filed yet.** Drafts are in `docs/issue-drafts/` for review.

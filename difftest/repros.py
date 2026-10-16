@@ -81,6 +81,11 @@ def main():
         (d / "in.bin").write_bytes(R.pack_inputs([(case["a"], case["b"], case["s"])] * R.THREADS))
         c = R.compile_batch(d / "kernel.slang")
         print(f"[{case['id']}] {case['title']}\n     {case['expr']}")
+        if not c.ok:
+            failures += len(R.PATHS)
+            print(f"     COMPILE FAILED: {c.finding.get('kind')}: "
+                  f"{(c.finding.get('stderr') or c.finding.get('msg') or '').strip()[:300]}\n")
+            continue
         print(f"     expected     {[hex(x) for x in case['expect']]}")
         for path in R.PATHS:
             status, words, _, err = R.run_path(path, c, d / "in.bin", 4 * R.THREADS)

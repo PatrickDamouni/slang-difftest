@@ -42,7 +42,7 @@ from . import ast as A
 
 ROOT = Path(__file__).resolve().parent.parent
 SDK = Path(os.environ.get("VULKAN_SDK", Path.home() / "VulkanSDK/1.4.363.0/macOS"))
-SLANGC = SDK / "bin/slangc"
+SLANGC = Path(os.environ["SLANGC"]) if os.environ.get("SLANGC") else SDK / "bin/slangc"
 SPIRV_VAL = SDK / "bin/spirv-val"
 ICD = SDK / "share/vulkan/icd.d"
 WORK = ROOT / "work"
