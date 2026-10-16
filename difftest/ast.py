@@ -1,4 +1,5 @@
-"""Random well-defined Slang expressions over uint / uint4.
+"""Random well-defined Slang expressions over uint / uint4 (with int4 casts in the
+`signed` family).
 
 One AST, two printers: `to_slang` emits Slang source and `evaluate` computes
 the exact expected value in Python. Because both come from the same tree, the
@@ -6,7 +7,8 @@ reference can't drift from the program it checks.
 
 Every operation is well-defined by construction, so a mismatch can never be
 blamed on undefined behaviour:
-  * only unsigned 32-bit arithmetic (wraps mod 2^32 in Slang/HLSL semantics)
+  * arithmetic is unsigned 32-bit (wraps mod 2^32); the `signed` family only uses
+    signed operations that cannot overflow (compare, min/max, >>, firstbithigh)
   * shift amounts are masked with `& 31u`
   * divisors are forced odd, hence non-zero, with `| 1u`
   * clamp bounds are ordered with min/max so lo <= hi

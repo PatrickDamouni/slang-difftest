@@ -6,6 +6,7 @@ leaf of the same type or with one of its own same-typed children; it is kept
 only if the failure predicate still holds. Repeats until nothing shrinks.
 
 Usage:
+  python3 -m difftest.run fuzz --family bitfield --seed 3 --keep-work   # keep the batch dirs
   python3 -m difftest.reduce --family bitfield --seed 300013 --k 32 --oracle metal_reject
   python3 -m difftest.reduce --family signed --seed 300009 --k 32 --oracle cpp_invalid
 """
@@ -21,7 +22,9 @@ from pathlib import Path
 from . import ast as A
 from . import run as R
 
-ORACLES = ("metal_reject", "cpp_invalid", "mismatch")
+# Compile-time failures only. Value mismatches (silent miscompiles) were minimized by
+# hand from the reducer's output; see FINDINGS.md.
+ORACLES = ("metal_reject", "cpp_invalid")
 
 
 def _paths(node, prefix=()):
@@ -65,8 +68,7 @@ class Predicate:
         src.write_text(R.kernel_source([A.to_slang(node)]))
         if self.oracle == "metal_reject":
             msl = src.with_suffix(".metal")
-            rc, _, _, _ = R.run([str(R.SLANGC), str(src), "-target", "metal", "-entry", "main",
-                                 "-stage", "compute", "-o", str(msl)])
+            rc, _, _, _ = R.run(R.slangc_cmd(src, "metal", msl))
             if rc != 0:
                 return False
             m = re.search(r"\[\[kernel\]\]\s*void\s+(\w+)", msl.read_text())
@@ -77,12 +79,10 @@ class Predicate:
             return rc == 4 and self.signature in err
         if self.oracle == "cpp_invalid":
             cpp = src.with_suffix(".cpp")
-            rc, _, _, _ = R.run([str(R.SLANGC), str(src), "-target", "cpp", "-entry", "main",
-                                 "-stage", "compute", "-o", str(cpp)])
+            rc, _, _, _ = R.run(R.slangc_cmd(src, "cpp", cpp))
             if rc != 0:
                 return False
-            rc, _, err, _ = R.run(["clang++", "-std=c++17", "-fsyntax-only",
-                                   f"-I{R.SDK / 'include/slang'}", "-x", "c++", str(cpp)])
+            rc, _, err, _ = R.run(R.cpp_check_cmd(cpp))
             return rc != 0 and self.signature in err
         raise ValueError(self.oracle)
 
@@ -135,8 +135,7 @@ def main():
                                   str(R.THREADS), str(batch / "in.bin"), str(probe.dir / "o.bin"),
                                   str(4 * R.THREADS * args.k)])
     else:
-        _, _, errtext, _ = R.run(["clang++", "-std=c++17", "-fsyntax-only",
-                                  f"-I{R.SDK / 'include/slang'}", "-x", "c++", str(batch / "kernel.cpp")])
+        _, _, errtext, _ = R.run(R.cpp_check_cmd(batch / "kernel.cpp"))
     idx = failing_function(src_text, errtext)
     sig = args.signature or re.search(r"error: ([^(]{0,60})", errtext).group(1).strip()
     print(f"failing function f{idx} (size {A.size(fns[idx])}); keeping error: {sig!r}")

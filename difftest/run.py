@@ -31,6 +31,7 @@ import json
 import os
 import random
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -45,6 +46,7 @@ SDK = Path(os.environ.get("VULKAN_SDK", Path.home() / "VulkanSDK/1.4.363.0/macOS
 SLANGC = Path(os.environ["SLANGC"]) if os.environ.get("SLANGC") else SDK / "bin/slangc"
 SPIRV_VAL = SDK / "bin/spirv-val"
 ICD = SDK / "share/vulkan/icd.d"
+SLANGC_VERSION = None   # filled in lazily by cmd_fuzz / selftest
 WORK = ROOT / "work"
 THREADS = 64            # one input vector per thread
 IN_WORDS = 9            # a: uint4, b: uint4, s: uint
@@ -118,6 +120,34 @@ def pack_inputs(inputs) -> bytes:
 # ------------------------------------------------------------------ steps
 
 
+def slangc_version() -> str:
+    p = subprocess.run([str(SLANGC), "-version"], capture_output=True, text=True)
+    return (p.stdout.strip() or p.stderr.strip()).splitlines()[0] if (p.stdout or p.stderr) else "?"
+
+
+def slangc_cmd(src: Path, target: str, out: Path) -> list[str]:
+    return [str(SLANGC), str(src), "-target", target, "-entry", "main", "-stage", "compute", "-o", str(out)]
+
+
+def cpp_check_cmd(cpp: Path) -> list[str]:
+    return ["clang++", "-std=c++17", "-fsyntax-only", f"-I{SDK / 'include/slang'}", "-x", "c++", str(cpp)]
+
+
+def kernel_signature(msl_text: str):
+    """(kernel name, buffer index of `inp`, buffer index of `outp`) from slangc's MSL."""
+    # The parameter list itself contains ")" (e.g. [[buffer(0)]]), so read up to the body's "{".
+    m = re.search(r"\[\[kernel\]\]\s*void\s+(\w+)\s*\((.*?)\)\s*\{", msl_text, re.S)
+    if not m:
+        return None
+    idx = {}
+    for name in ("inp", "outp"):
+        mm = re.search(rf"\b{name}\w*\s*\[\[buffer\((\d+)\)\]\]", m.group(2))
+        if not mm:
+            return None
+        idx[name] = int(mm.group(1))
+    return m.group(1), idx["inp"], idx["outp"]
+
+
 @dataclass
 class Compiled:
     ok: bool
@@ -145,8 +175,7 @@ def compile_batch(src_path: Path, spv_src: Path | None = None) -> Compiled:
     spv = src_path.with_suffix(".spv")
     msl = src_path.with_suffix(".metal")
     for target, out, src in (("spirv", spv, spv_src or src_path), ("metal", msl, src_path)):
-        rc, _, err, _ = run([str(SLANGC), str(src), "-target", target, "-entry", "main",
-                             "-stage", "compute", "-o", str(out)])
+        rc, _, err, _ = run(slangc_cmd(src, target, out))
         if rc != 0:
             kind = "slangc_crash" if (rc == "timeout" or (isinstance(rc, int) and rc < 0)
                                       or "internal" in err.lower()) else "slangc_reject"
@@ -158,32 +187,20 @@ def compile_batch(src_path: Path, spv_src: Path | None = None) -> Compiled:
 
     # C++ (CPU target) compile oracle: slangc's C++ must at least compile.
     cpp = src_path.with_suffix(".cpp")
-    rc, _, err, _ = run([str(SLANGC), str(src_path), "-target", "cpp", "-entry", "main",
-                         "-stage", "compute", "-o", str(cpp)])
+    rc, _, err, _ = run(slangc_cmd(src_path, "cpp", cpp))
     if rc != 0:
         return Compiled(False, finding={"kind": "slangc_reject", "target": "cpp", "rc": rc,
                                         "stderr": err[-1500:]})
-    rc, _, err, _ = run(["clang++", "-std=c++17", "-fsyntax-only", f"-I{SDK / 'include/slang'}",
-                         "-x", "c++", str(cpp)])
+    rc, _, err, _ = run(cpp_check_cmd(cpp))
     cpp_finding = None
     if rc != 0:
         errs = [ln for ln in err.splitlines() if "error:" in ln]
         cpp_finding = {"kind": "cpp_codegen_invalid", "errors": errs[:5]}
 
-    text = msl.read_text()
-    # The parameter list itself contains ")" (e.g. [[buffer(0)]]), so read up to the body's "{".
-    m = re.search(r"\[\[kernel\]\]\s*void\s+(\w+)\s*\((.*?)\)\s*\{", text, re.S)
-    if not m:
-        return Compiled(False, finding={"kind": "harness_error", "msg": "no kernel in MSL"})
-    sig = m.group(2)
-    idx = {}
-    for name in ("inp", "outp"):
-        mm = re.search(rf"\b{name}\w*\s*\[\[buffer\((\d+)\)\]\]", sig)
-        if not mm:
-            return Compiled(False, finding={"kind": "harness_error", "msg": f"no buffer index for {name}",
-                                            "signature": sig[:500]})
-        idx[name] = int(mm.group(1))
-    return Compiled(True, spv, msl, m.group(1), idx["inp"], idx["outp"], finding=cpp_finding)
+    sig = kernel_signature(msl.read_text())
+    if not sig:
+        return Compiled(False, finding={"kind": "harness_error", "msg": "could not parse MSL kernel signature"})
+    return Compiled(True, spv, msl, sig[0], sig[1], sig[2], finding=cpp_finding)
 
 
 def run_path(path: str, c: Compiled, in_bin: Path, out_words: int):
@@ -207,21 +224,24 @@ def run_path(path: str, c: Compiled, in_bin: Path, out_words: int):
 
 
 def metal_per_function(texts, inputs, workdir: Path, mutate=None):
-    """Metal outputs for each function compiled alone; rejected ones stay unknown (None words)."""
+    """Metal outputs for each function compiled alone (MSL only); functions Metal
+    rejects on their own stay None and are reported by the batch-level finding."""
     words = [None] * (len(texts) * THREADS * 4)
     in_bin = workdir / "in.bin"
     for i, body in enumerate(texts):
         d = workdir / f"single-{i}"
         d.mkdir(exist_ok=True)
-        src = d / "kernel.slang"
-        # f0 inside the single-function kernel stands for f<i>; outputs map back below.
+        src, msl = d / "kernel.slang", d / "kernel.metal"
+        # The single-function kernel names this function f0; outputs map back to slot i.
         src.write_text(kernel_source([body]))
-        c = compile_batch(src)
-        if not c.ok:
+        if run(slangc_cmd(src, "metal", msl))[0] != 0:
             continue
         if mutate and mutate.get("msl") and i == 0:
-            c.msl.write_text(mutate["msl"](c.msl.read_text()))
-        status, w, _, _ = run_path("metal", c, in_bin, THREADS * 4)
+            msl.write_text(mutate["msl"](msl.read_text()))
+        sig = kernel_signature(msl.read_text())
+        if not sig:
+            continue
+        status, w, _, _ = run_path("metal", Compiled(True, None, msl, *sig), in_bin, THREADS * 4)
         if status == "ok":
             words[i * THREADS * 4:(i + 1) * THREADS * 4] = w
     return words
@@ -255,8 +275,10 @@ def triage(bad: set[str]) -> str:
 
 
 def run_batch(seed: int, k: int, kinds, workdir: Path, mutate=None) -> dict:
-    """Generate, compile, run and compare one batch. `mutate(src) -> (msl_src
-    override fn, spv_src_text)` is used only by selftest to plant faults."""
+    """Generate, compile, run and compare one batch. `mutate` is used only by
+    selftest to plant faults: a dict with optional "msl" (str -> str, applied to
+    the generated MSL) and "slang_for_spirv" (str -> str, applied to the Slang
+    source fed to the SPIR-V path only)."""
     rng = random.Random(seed)
     gen = A.Gen(seed, kinds)
     fns = [gen.vec() for _ in range(k)]
@@ -278,7 +300,7 @@ def run_batch(seed: int, k: int, kinds, workdir: Path, mutate=None) -> dict:
     c = compile_batch(src_path, spv_src)
     compile_s = time.monotonic() - t0
     result = {"seed": seed, "k": k, "kinds": kinds or "all", "compile_s": round(compile_s, 3),
-              "findings": [], "paths": {}}
+              "slangc": str(SLANGC), "slangc_version": SLANGC_VERSION, "findings": [], "paths": {}}
     if not c.ok:
         result["findings"].append({**c.finding, "source": str(src_path)})
         return result
@@ -330,30 +352,51 @@ def run_batch(seed: int, k: int, kinds, workdir: Path, mutate=None) -> dict:
 # ------------------------------------------------------------------ commands
 
 
+def bucket(fd: dict) -> tuple:
+    """Coarse root-cause grouping: value mismatches by the layer triage blames,
+    C++ errors by the error text. One bug typically shows up as many findings."""
+    if fd["kind"] == "mismatch":
+        return ("mismatch", fd["layer"])
+    if fd["kind"] == "cpp_codegen_invalid":
+        e = (fd.get("errors") or [""])[0]
+        return ("cpp_codegen_invalid", re.sub(r"^.*?error: ", "", e)[:110])
+    return (fd["kind"],)
+
+
 def cmd_fuzz(args):
+    global SLANGC_VERSION
+    SLANGC_VERSION = slangc_version()
     kinds = A.FAMILIES[args.family] if args.family != "all" else None
     stamp = time.strftime("%Y%m%d-%H%M%S")
     log = ROOT / f"results/raw-{stamp}-{args.family}.jsonl"
     log.parent.mkdir(exist_ok=True)
     totals = {"batches": 0, "functions": 0, "findings": 0}
+    buckets = {}
     t0 = time.monotonic()
+    print(f"slangc {SLANGC_VERSION} ({SLANGC})", flush=True)
     with log.open("w") as f:
         for bi in range(args.batches):
             seed = args.seed * 100003 + bi
-            r = run_batch(seed, args.k, kinds, WORK / f"{args.family}-{seed}")
+            wd = WORK / f"{args.family}-{seed}"
+            r = run_batch(seed, args.k, kinds, wd)
             f.write(json.dumps(r) + "\n")
             f.flush()
             totals["batches"] += 1
             totals["functions"] += args.k
             totals["findings"] += len(r["findings"])
             for fd in r["findings"]:
+                buckets.setdefault(bucket(fd), []).append(seed)
                 tag = fd.get("layer") or fd.get("kind")
                 detail = fd.get("expr") or (fd.get("errors") or [""])[0] or fd.get("stderr", "")
                 print(f"  [seed {seed}] {fd['kind']}: {tag} :: {detail[:160]}", flush=True)
+            if not r["findings"] and not args.keep_work:
+                shutil.rmtree(wd, ignore_errors=True)   # keep only batches worth reproducing
     secs = time.monotonic() - t0
     print(f"\n{totals['functions']} functions in {totals['batches']} batches, "
-          f"{totals['findings']} findings, {totals['functions'] / secs * 60:.0f} functions/min "
-          f"({secs:.0f} s). Log: {log}")
+          f"{totals['findings']} findings in {len(buckets)} buckets, "
+          f"{totals['functions'] / secs * 60:.0f} functions/min ({secs:.0f} s). Log: {log}")
+    for key, seeds in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
+        print(f"  {len(seeds):4d} x {key}  (e.g. seed {seeds[0]})")
 
 
 def swap_first_op_in(fn_index: int, old: str, new: str):
@@ -407,6 +450,7 @@ def main():
     f.add_argument("--k", type=int, default=32)
     f.add_argument("--family", default="all", choices=["all", *A.FAMILIES])
     f.add_argument("--seed", type=int, default=1)
+    f.add_argument("--keep-work", action="store_true", help="keep work/ dirs of batches with no findings")
     sub.add_parser("selftest")
     args = ap.parse_args()
     {"fuzz": cmd_fuzz, "selftest": cmd_selftest}[args.cmd](args)

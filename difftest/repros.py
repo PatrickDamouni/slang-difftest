@@ -53,17 +53,10 @@ CASES = [
     },
     {
         "id": "C1",
-        "title": "KosmicKrisp: x == -x at INT_MIN (signed-overflow UB in emitted MSL)",
+        "title": "KosmicKrisp: b == -b at b = 0x80000000 (uint4; emitted as signed int in MSL)",
         "expr": "uint4(b == -b)",
         "a": (0, 0, 0, 0), "b": (0x80000000, 0, 1, 0x7FFFFFFF), "s": 0,
         "expect": (1, 1, 0, 0),
-    },
-    {
-        "id": "C2",
-        "title": "KosmicKrisp: int(x) + 1 > int(x) at INT_MAX",
-        "expr": "uint4(int4(b) + int4(1, 1, 1, 1) > int4(b))",
-        "a": (0, 0, 0, 0), "b": (0x7FFFFFFF, 5, 0x80000000, 0x40000000), "s": 0,
-        "expect": tuple(int(s32((x + 1) & M) > s32(x)) for x in (0x7FFFFFFF, 5, 0x80000000, 0x40000000)),
     },
 ]
 

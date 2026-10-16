@@ -12,10 +12,10 @@ outp[1] = bitfieldInsert(base, ins, off, bits); // expected ins; Metal returns b
 The SPIR-V path (MoltenVK and KosmicKrisp) returns the expected values. Widths 0, 1, 8, 16 and 31 are correct on Metal.
 
 **Cause**
-`emitBitfieldExtractImpl`/`emitBitfieldInsertImpl` build the mask as `(1 << bits) - 1`. For `bits` equal to the type width, that shift is undefined in MSL/C++ (on this GPU it behaves like a mask of 0). GLSL and SPIR-V only make the result undefined when `offset + bits` *exceeds* the width, so `bits == 32` with `offset == 0` is a defined full-width operation.
+`emitBitfieldExtractImpl`/`emitBitfieldInsertImpl` build the mask as `(1 << bits) - 1`. For `bits` equal to the type width, that shift is undefined in MSL/C++ (on this GPU it behaves like a mask of 0). HLSL masks the shift amount, so there the mask is deterministically 0. GLSL and SPIR-V only make the result undefined when `offset + bits` *exceeds* the width, so `bits == 32` with `offset == 0` is a defined full-width operation.
 
 **Possible fix:** a mask form that is defined at full width, e.g. for width W:
-`((1 << (bits & (W-1))) - 1) | (0 - (bits >> log2(W)))`
-This has no shift ≥ W and avoids a branch, so it should also suit WGSL. Not tested on targets other than Metal.
+`((1 << (bits & (W-1))) - 1) | ((bits >> log2(W)) * ~0)`
+This has no shift ≥ W and no wrapping subtraction. I verified it on Metal (execution), C++ (clang compile), DXIL (compile) and WGSL (generation only). A patch with a regression test is ready if useful.
 
 Related: #5858 (add more bitfield tests). Existing tests use constant offsets/bits and never `bits == 32`.

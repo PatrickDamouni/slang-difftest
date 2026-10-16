@@ -1,6 +1,6 @@
-From a8f8f3a8b28f46473c5f485b0dc517195499dca5 Mon Sep 17 00:00:00 2001
-From: Patrick Damouni <patrick.damouni@icloud.com>
-Date: Fri, 16 Oct 2026 11:49:01 -0400
+From 9d6ee0c8c9e1a5329682981d84e6bdfbe5ad8040 Mon Sep 17 00:00:00 2001
+From: Patrick Damouni <285312614+PatrickDamouni@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 11:58:20 -0400
 Subject: [PATCH] Fix bitfieldInsert parenthesization and full-width bitfield
  masks in C-like emitters
 
@@ -15,27 +15,29 @@ bitfieldExtract(x, 0, 32). The mask is now built without a full-width shift.
 
 Adds tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang.
 ---
- source/slang/slang-emit-c-like.cpp            | 58 ++++++++++++++----
- .../bitfield-full-width-and-swizzle.slang     | 59 +++++++++++++++++++
- 2 files changed, 106 insertions(+), 11 deletions(-)
+ source/slang/slang-emit-c-like.cpp            | 60 +++++++++++++++----
+ .../bitfield-full-width-and-swizzle.slang     | 59 ++++++++++++++++++
+ 2 files changed, 108 insertions(+), 11 deletions(-)
  create mode 100644 tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang
 
 diff --git a/source/slang/slang-emit-c-like.cpp b/source/slang/slang-emit-c-like.cpp
-index 626596f..f3e3513 100644
+index 626596f..dd5cfd8 100644
 --- a/source/slang/slang-emit-c-like.cpp
 +++ b/source/slang/slang-emit-c-like.cpp
-@@ -4298,6 +4298,31 @@ String CLikeSourceEmitter::_emitLiteralOneWithType(int bitWidth)
+@@ -4298,6 +4298,33 @@ String CLikeSourceEmitter::_emitLiteralOneWithType(int bitWidth)
      return one;
  }
  
 +// Emits an expression for a mask with the low `bts` bits set, valid for every `bts` in
 +// [0, bitWidth]. For example, `bitfieldExtract(x, 0, 32)` needs the all-ones mask.
 +// We do not emit the textbook `(1 << bts) - 1`, because when `bts` equals the bit width the
-+// shift amount equals the width, which is undefined in C, C++, MSL and HLSL (Metal evaluates
-+// `bitfieldExtract(x, 0, 32)` to 0). Instead we emit
-+//     ((1 << (bts & (W-1))) - 1) | (0 - (bts >> log2(W)))
-+// whose second term is all ones exactly when `bts == W` and zero otherwise, so no shift reaches
-+// the bit width and the expression needs no conditional operator, which WGSL lacks.
++// shift amount equals the width: that is undefined in C, C++ and MSL, and HLSL masks the shift
++// amount, so the mask silently becomes 0 (Metal evaluates `bitfieldExtract(x, 0, 32)` to 0).
++// Instead we emit
++//     ((1 << (bts & (W-1))) - 1) | ((bts >> log2(W)) * ~0)
++// whose second term is all ones exactly when `bts == W` and zero otherwise. No shift reaches the
++// bit width, and no subtraction can wrap, so the same text is also valid as a WGSL constant
++// expression when `bts` is a literal.
 +static void _emitBitfieldMask(
 +    SourceWriter* writer,
 +    const String& one,
@@ -48,15 +50,15 @@ index 626596f..f3e3513 100644
 +    SLANG_ASSERT((1 << log2Width) == bitWidth);
 +    writer->emit("(((" + one + "<<((");
 +    emitBits();
-+    writer->emit(")&" + String(bitWidth - 1) + "))-" + one + ")|((" + one + "-" + one + ")-((");
++    writer->emit(")&" + String(bitWidth - 1) + "))-" + one + ")|(((");
 +    emitBits();
-+    writer->emit(")>>" + String(log2Width) + ")))");
++    writer->emit(")>>" + String(log2Width) + ")*~(" + one + "-" + one + ")))");
 +}
 +
  void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
  {
      // If unsigned, bfue := ((val>>off)&((1u<<bts)-1))
-@@ -4380,9 +4405,11 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
+@@ -4380,9 +4407,11 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
          vectorTypeForShiftNumber,
          [&]()
          {
@@ -71,7 +73,7 @@ index 626596f..f3e3513 100644
          });
      m_writer->emit("))");
  
-@@ -4463,6 +4490,10 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+@@ -4463,6 +4492,10 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
  
      String one = _emitLiteralOneWithType(bitWidth);
  
@@ -82,7 +84,7 @@ index 626596f..f3e3513 100644
      if (isSigned)
      {
          emitType(inst->getDataType());
-@@ -4490,11 +4521,13 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+@@ -4490,11 +4523,13 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
          vectorTypeForShiftNumber,
          [&]()
          {
@@ -101,7 +103,7 @@ index 626596f..f3e3513 100644
              emitOperand(off, getInfo(EmitOp::General));
              m_writer->emit(")");
          });
-@@ -4522,9 +4555,11 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+@@ -4522,9 +4557,11 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
          vectorTypeForShiftNumber,
          [&]()
          {
@@ -116,7 +118,7 @@ index 626596f..f3e3513 100644
          });
      m_writer->emit(")");
  
-@@ -4539,6 +4574,7 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+@@ -4539,6 +4576,7 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
      {
          m_writer->emit(")");
      }
@@ -126,7 +128,7 @@ index 626596f..f3e3513 100644
  void CLikeSourceEmitter::emitStruct(IRStructType* structType)
 diff --git a/tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang b/tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang
 new file mode 100644
-index 0000000..edaeb56
+index 0000000..81e5fa7
 --- /dev/null
 +++ b/tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang
 @@ -0,0 +1,59 @@
@@ -146,14 +148,14 @@ index 0000000..edaeb56
 +//TEST(compute):COMPARE_COMPUTE(filecheck-buffer=CHECK):-cuda
 +//TEST(compute):COMPARE_COMPUTE(filecheck-buffer=CHECK):-wgpu
 +
-+// CHECK: DEADBEEF
-+// CHECK-NEXT: BADF00D
-+// CHECK-NEXT: DEADBEEF
-+// CHECK-NEXT: 222220B2
-+// CHECK-NEXT: 111110A1
-+// CHECK-NEXT: 222220B2
-+// CHECK-NEXT: EE
-+// CHECK-NEXT: DEADB0DF
++// CHECK: {{^}}DEADBEEF{{$}}
++// CHECK-NEXT: {{^}}BADF00D{{$}}
++// CHECK-NEXT: {{^}}DEADBEEF{{$}}
++// CHECK-NEXT: {{^}}222220B2{{$}}
++// CHECK-NEXT: {{^}}111110A1{{$}}
++// CHECK-NEXT: {{^}}222220B2{{$}}
++// CHECK-NEXT: {{^}}EE{{$}}
++// CHECK-NEXT: {{^}}DEADB0DF{{$}}
 +
 +//TEST_INPUT:ubuffer(data=[0 32 4 8], stride=4):name=params
 +StructuredBuffer<uint> params;

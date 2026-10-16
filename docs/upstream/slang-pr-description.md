@@ -1,58 +1,62 @@
-# DRAFT PR — not opened. Target: shader-slang/slang, label "pr: non-breaking"
-
-**Before opening:**
-1. Read and understand every line of `0001-…patch`. Slang's CONTRIBUTING.md requires that you "exercised sufficient review, judgment, and creative direction" over AI-assisted code.
-2. File issues A and B first (or reference them here).
-3. Comment `/format` on the PR to let the bot fix formatting.
-
----
-
 **Title:** Fix bitfieldInsert parenthesization and full-width bitfield masks in C-like emitters
 
 ## Motivation
 
-Consider this compute shader, where `off = 4` and `bits = 8` come from a buffer:
+Consider this shader, where `off = 4` and `bits = 8` come from a buffer at runtime:
 
 ```slang
 uint4 a = uint4(0x11111111, 0x22222222, 0x33333333, 0x44444444);
 uint4 b = uint4(0xA, 0xB, 0xC, 0xD);
-outputBuffer[0] = bitfieldInsert(a, b, off, bits).y;   // expected 0x222220B2
+uint4 r = uint4(bitfieldInsert(a, b, off, bits).y);  // expected 0x222220B2 in every lane
 ```
 
-On Metal this writes `0x111110A1`, `0x222220B2`, … in the wrong lanes. With `.xy` instead of `.y`, the Metal compiler rejects the generated MSL, and `-target cpp` produces C++ that does not compile (`'Vector<uint32_t,4>' | 'unsigned int'`). The SPIR-V path is correct.
+- On Metal, `r` is `0x111110B1, 0x222220B2, 0x333330B3, 0x444440B4`.
+- A scalar use such as `uint y = bitfieldInsert(a, b, off, bits).y;` fails to compile on Metal, and so does `.xy`.
+- With `-target cpp` the generated C++ does not compile: `'Vector<uint32_t, 4>' | 'unsigned int'`.
+- The SPIR-V path is correct.
 
-Separately, with `off = 0` and `bits = 32`, `bitfieldExtract(x, off, bits)` returns `0` on Metal instead of `x`, and `bitfieldInsert(base, ins, off, bits)` returns `base` instead of `ins`. GLSL and SPIR-V define these full-width operations; only `offset + bits` *greater than* the width is undefined. The SPIR-V path is again correct.
+Separately, with `off = 0` and `bits = 32`:
+- `bitfieldExtract(x, off, bits)` returns `0` on Metal instead of `x`;
+- `bitfieldInsert(base, ins, off, bits)` returns `base` instead of `ins`.
 
-Both were found by a differential tester that compares Slang's Metal output, its SPIR-V output (on MoltenVK and KosmicKrisp) and a reference interpreter on random well-defined programs. Both reproduce with 2026.18.3, 2026.19 and `master` (3a93b38).
+GLSL and SPIR-V only leave the result undefined when `offset + bits` exceeds the width, so these full-width operations are defined, and the SPIR-V path returns the expected values.
+
+Both problems reproduce with 2026.18.3, 2026.19 and `master` (3a93b38). They were found by a differential tester that compares Slang's Metal output, its SPIR-V output (run on MoltenVK and KosmicKrisp) and a reference evaluator over randomly generated well-defined functions.
 
 ## Proposed solution
 
-Both problems are in the text expansions that `CLikeSourceEmitter` uses for `kIROp_BitfieldInsert` and `kIROp_BitfieldExtract` on targets without a native instruction.
+Both problems are in the text expansions `CLikeSourceEmitter` uses for `kIROp_BitfieldInsert` and `kIROp_BitfieldExtract`. The IR instructions are fine; the malformed output comes entirely from the emitter's expansion, so the emitter is the layer that owns the fix.
 
-1. **Parenthesization.** The insert expansion's top-level operator is `|`. When the instruction is folded into a use with a postfix operator, `emitOperand` appends `.y` to the emitted text, so the swizzle binds to the right operand only. The extract expansion is already fully parenthesized, which is why `bitfieldExtract(...).y` is correct. We wrap the whole insert expansion in parentheses the same way.
-2. **Full-width mask.** Both expansions build the mask as `(1 << bits) - 1`. When `bits` equals the bit width, the shift amount equals the width, which is undefined in C, C++, MSL and HLSL. We replace it with a new helper, `_emitBitfieldMask`, that emits `((1 << (bits & (W-1))) - 1) | (0 - (bits >> log2 W))`. The second term is all ones exactly when `bits == W`, so no shift reaches the width. The expression needs no conditional operator, so it stays valid for WGSL, which shares this code.
+1. **Parenthesization.** The insert expansion's top-level operator is `|`. When the instruction is folded into a use with a postfix operator, the swizzle is appended to the emitted text and binds only to the right operand. The extract expansion is already fully parenthesized, which is why `bitfieldExtract(...).y` is correct. We wrap the insert expansion the same way.
+2. **Full-width mask.** Both expansions build the mask as `(1 << bits) - 1`. When `bits` equals the bit width, the shift amount equals the width: that is undefined in C, C++ and MSL, and HLSL masks the shift amount so the mask becomes 0. We add `_emitBitfieldMask`, which emits `((1 << (bits & (W-1))) - 1) | ((bits >> log2 W) * ~0)`.
+   - The second term is all ones exactly when `bits == W`.
+   - No shift reaches the width, and nothing can wrap, so a literal `bits` also stays a valid WGSL constant expression.
+   - One branch-free form serves every C-like target that shares this code.
 
-The IR instruction is the correct, canonical input. The malformed output is produced entirely by the emitter's own expansion, so the emitter is the layer that owns this fix.
+**Alternative considered:** lowering to native intrinsics where they exist (`extract_bits`/`insert_bits` in MSL, `extractBits`/`insertBits` in WGSL). That would need per-target changes and per-target edge-case auditing, so this PR keeps the shared expansion correct instead. I'm happy to switch if maintainers prefer the intrinsic lowering.
 
 ## Change summary
 
 | File | Change |
 |---|---|
-| `source/slang/slang-emit-c-like.cpp` | Adds `_emitBitfieldMask`. `emitBitfieldExtractImpl` and `emitBitfieldInsertImpl` use it for every mask. `emitBitfieldInsertImpl` wraps its expansion in parentheses. |
-| `tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang` | New regression test, run on all six targets like the existing bitfield tests. Offset and width come from a buffer so they are not constant-folded. Covers full-width extract/insert (unsigned and signed), `bitfieldInsert(...).y` and `.xy`, and ordinary widths. |
+| `source/slang/slang-emit-c-like.cpp` | Adds `_emitBitfieldMask`. `emitBitfieldExtractImpl` and `emitBitfieldInsertImpl` use it for every mask. `emitBitfieldInsertImpl` parenthesizes its whole expansion. |
+| `tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang` | New regression test with the same targets as the existing bitfield tests. Offset and width come from a buffer so they are not constant-folded. Covers full-width extract/insert (unsigned and signed), `bitfieldInsert(...).y` and `.xy`, and ordinary widths. CHECK lines are anchored with `{{^}}…{{$}}` so a value can't match as a substring. |
 
 ## Concepts and vocabulary
 
-- **Folding into use sites:** a pure, single-use instruction is emitted inline inside its user's expression instead of as a named temporary. That is why the expansion's own precedence matters here.
-- **`emitVecNOrScalar`:** wraps a scalar expression in a vector constructor for vector types; the masks are emitted through it.
+- **Folding into use sites:** a pure, single-use instruction is emitted inline in its user's expression rather than as a temporary. That is why the expansion's own precedence matters.
 
 ## Process report
 
-- **Parentheses (insert).** Before: the swizzle test above produces `((base)&~mask)|(((ins)&m)<<off).y` in MSL. After: `(((base)&~mask)|(((ins)&m)<<off)).y`. We verified this on Metal (Apple M4 Pro, macOS 26.6.2) by running the shader: all lanes are now `0x222220B2`. Without this change, the `.y`/`.xy` checks in the new test fail on Metal, and `-target cpp` fails to compile.
-- **Full-width mask (extract and insert).** Without `_emitBitfieldMask`, the test's first three checks fail on Metal (`0`, `DEADBEEF`, `0`). With it, they pass. Ordinary widths (`EE`, `DEADB0DF`) are unchanged.
+- **Parentheses.** With the example above, unpatched MSL contains `((base)&~mask)|(((ins)&m)<<off).y`; patched MSL contains `(((base)&~mask)|(((ins)&m)<<off)).y`. On Metal (Apple M4 Pro, macOS 26.6.2) the new test's `.y`/`.xy` checks fail to compile unpatched and produce `222220B2`, `111110A1`, `222220B2` patched.
+- **Mask.** Unpatched, the test's three full-width checks give `0`, `DEADBEEF`, `0` on Metal; patched, they give `DEADBEEF`, `BADF00D`, `DEADBEEF`. Ordinary widths (`EE`, `DEADB0DF`) are unchanged.
 - **Other targets.**
-  - **Tested by the author:** Metal execution (all 8 checks pass), `-target cpp` compiles with clang, `-target dxil` compiles for both bitfield tests, `-target wgsl` generates for `bitfield-extract.slang`.
-  - **Not tested:** CUDA, D3D12 and WGPU execution. These are left to CI.
-  - **Pre-existing, unchanged by this patch:** `bitfield-insert-extract-non32bit.slang` already fails `-target dxil` with "unexpected IR opcode", and that test only declares `-vk`.
-- **Fuzzing.** On 1,280 random programs the unpatched compiler gives 117 Metal value mismatches and 12 Metal compile rejections. The patched compiler gives 0 of each. Remaining findings are the known #13553 C++ shift issue and an unrelated KosmicKrisp bug.
-- **Known limitation, not changed.** The signed-extract sign extension still shifts by `(W - bits)`, which is a full-width shift when `bits == 0`. It produced the correct result on Metal in testing, so this PR leaves it alone rather than change behaviour without a failing test.
+  - **Run locally:** Metal execution (8/8 checks), `-target cpp` (compiles with clang), `-target dxil` (compiles), `-target wgsl` (generates).
+  - **Not run locally:** CUDA, D3D12 and WGPU execution, and validation of the WGSL output. These are left to CI.
+  - **Pre-existing, unchanged by this patch:** `bitfield-insert-extract-non32bit.slang` fails `-target dxil` with "unexpected IR opcode" with or without it, and that test declares only `-vk`.
+- **Fuzzing.** On 1,280 generated functions (40 kernels) the unpatched compiler gives 117 Metal value mismatches and 12 Metal compile rejections; the patched compiler gives 0 of each. On 320 bitfield-only functions: 129 mismatches and 10 rejections unpatched, 0 patched.
+- **Not changed.** Two edge cases still shift by the full width in the expansion:
+  - the value shift when `offset == 32` (with `bits == 0`);
+  - the signed-extract sign extension when `bits == 0`.
+
+  Both produced correct results on Metal in testing, and this PR leaves them alone rather than change behaviour without a failing test. A follow-up could handle them the same way.
