@@ -156,6 +156,20 @@ def compile_batch(src_path: Path, spv_src: Path | None = None) -> Compiled:
     if rc != 0:
         return Compiled(False, finding={"kind": "spirv_invalid", "stderr": err[-1500:]})
 
+    # C++ (CPU target) compile oracle: slangc's C++ must at least compile.
+    cpp = src_path.with_suffix(".cpp")
+    rc, _, err, _ = run([str(SLANGC), str(src_path), "-target", "cpp", "-entry", "main",
+                         "-stage", "compute", "-o", str(cpp)])
+    if rc != 0:
+        return Compiled(False, finding={"kind": "slangc_reject", "target": "cpp", "rc": rc,
+                                        "stderr": err[-1500:]})
+    rc, _, err, _ = run(["clang++", "-std=c++17", "-fsyntax-only", f"-I{SDK / 'include/slang'}",
+                         "-x", "c++", str(cpp)])
+    cpp_finding = None
+    if rc != 0:
+        errs = [ln for ln in err.splitlines() if "error:" in ln]
+        cpp_finding = {"kind": "cpp_codegen_invalid", "errors": errs[:5]}
+
     text = msl.read_text()
     # The parameter list itself contains ")" (e.g. [[buffer(0)]]), so read up to the body's "{".
     m = re.search(r"\[\[kernel\]\]\s*void\s+(\w+)\s*\((.*?)\)\s*\{", text, re.S)
@@ -169,7 +183,7 @@ def compile_batch(src_path: Path, spv_src: Path | None = None) -> Compiled:
             return Compiled(False, finding={"kind": "harness_error", "msg": f"no buffer index for {name}",
                                             "signature": sig[:500]})
         idx[name] = int(mm.group(1))
-    return Compiled(True, spv, msl, m.group(1), idx["inp"], idx["outp"])
+    return Compiled(True, spv, msl, m.group(1), idx["inp"], idx["outp"], finding=cpp_finding)
 
 
 def run_path(path: str, c: Compiled, in_bin: Path, out_words: int):
@@ -190,6 +204,27 @@ def run_path(path: str, c: Compiled, in_bin: Path, out_words: int):
         return "ok", list(struct.unpack(f"<{out_words}I", data)), secs, ""
     status = {"timeout": "hang", 4: "metal_reject"}.get(rc, "crash")
     return status, None, secs, err[-1500:]
+
+
+def metal_per_function(texts, inputs, workdir: Path, mutate=None):
+    """Metal outputs for each function compiled alone; rejected ones stay unknown (None words)."""
+    words = [None] * (len(texts) * THREADS * 4)
+    in_bin = workdir / "in.bin"
+    for i, body in enumerate(texts):
+        d = workdir / f"single-{i}"
+        d.mkdir(exist_ok=True)
+        src = d / "kernel.slang"
+        # f0 inside the single-function kernel stands for f<i>; outputs map back below.
+        src.write_text(kernel_source([body]))
+        c = compile_batch(src)
+        if not c.ok:
+            continue
+        if mutate and mutate.get("msl") and i == 0:
+            c.msl.write_text(mutate["msl"](c.msl.read_text()))
+        status, w, _, _ = run_path("metal", c, in_bin, THREADS * 4)
+        if status == "ok":
+            words[i * THREADS * 4:(i + 1) * THREADS * 4] = w
+    return words
 
 
 def reference(fn_asts, inputs) -> list[int]:
@@ -247,6 +282,8 @@ def run_batch(seed: int, k: int, kinds, workdir: Path, mutate=None) -> dict:
     if not c.ok:
         result["findings"].append({**c.finding, "source": str(src_path)})
         return result
+    if c.finding:   # non-fatal: C++ output didn't compile; GPU paths still run
+        result["findings"].append({**c.finding, "source": str(src_path)})
     if mutate and mutate.get("msl"):
         c.msl.write_text(mutate["msl"](c.msl.read_text()))
 
@@ -257,6 +294,10 @@ def run_batch(seed: int, k: int, kinds, workdir: Path, mutate=None) -> dict:
         result["paths"][path] = {"status": status, "secs": round(secs, 3)}
         if status != "ok":
             result["findings"].append({"kind": f"{path}_{status}", "stderr": err, "source": str(src_path)})
+        if status == "metal_reject":
+            # One rejected function must not hide silent miscompiles in the rest of
+            # the batch: re-run every function on Metal on its own.
+            words = metal_per_function(texts, inputs, workdir, mutate)
         outs[path] = words
 
     for i in range(k):
@@ -267,6 +308,8 @@ def run_batch(seed: int, k: int, kinds, workdir: Path, mutate=None) -> dict:
                 continue
             for t in range(THREADS):
                 base = (i * THREADS + t) * 4
+                if None in got[base:base + 4]:
+                    continue   # this function was rejected by Metal; reported separately
                 if got[base:base + 4] != ref[base:base + 4]:
                     bad.add(path)
                     if example is None:
@@ -305,8 +348,8 @@ def cmd_fuzz(args):
             totals["findings"] += len(r["findings"])
             for fd in r["findings"]:
                 tag = fd.get("layer") or fd.get("kind")
-                print(f"  [seed {seed}] {fd['kind']}: {tag} :: {fd.get('expr', fd.get('stderr', ''))[:140]}",
-                      flush=True)
+                detail = fd.get("expr") or (fd.get("errors") or [""])[0] or fd.get("stderr", "")
+                print(f"  [seed {seed}] {fd['kind']}: {tag} :: {detail[:160]}", flush=True)
     secs = time.monotonic() - t0
     print(f"\n{totals['functions']} functions in {totals['batches']} batches, "
           f"{totals['findings']} findings, {totals['functions'] / secs * 60:.0f} functions/min "

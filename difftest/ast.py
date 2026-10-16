@@ -80,6 +80,33 @@ UNARY_FNS = {
 }
 SWZ = "xyzw"
 
+
+def _signed(x: int) -> int:
+    x &= M32
+    return x - (1 << 32) if x & 0x80000000 else x
+
+
+def _sfbh(x: int) -> int:
+    """firstbithigh on a signed int (Slang core module): for negative values
+    the highest 0-bit; 0xFFFFFFFF for 0 and for -1."""
+    v = _signed(x)
+    if v < 0:
+        v = ~v
+    return M32 if v == 0 else v.bit_length() - 1
+
+
+def _mask(bits: int) -> int:
+    return M32 if bits >= 32 else (1 << bits) - 1
+
+
+def _bfe(value: int, off: int, bits: int) -> int:
+    return (value >> off) & _mask(bits)
+
+
+def _bfi(base: int, ins: int, off: int, bits: int) -> int:
+    m = (_mask(bits) << off) & M32
+    return (base & ~m & M32) | ((ins << off) & m)
+
 # Feature families: the generator can be restricted to one at a time, so a
 # planted or real bug is attributed to a small set of constructs.
 FAMILIES = {
@@ -90,6 +117,13 @@ FAMILIES = {
     "swizzle": ["swizzle", "construct", "broadcast"],
     "bits": ["unary"],
     "dot": ["dot"],
+    # Signed and mixed-signedness integer ops, written as uint4 -> int4 -> uint4
+    # so the AST stays uint4-typed. Excluded because they are undefined for
+    # signed ints in C++/MSL: left shift of negatives, overflow, INT_MIN / -1.
+    "signed": ["sshr", "ushl_s", "scmp", "sminmax", "sfbh"],
+    # bitfieldExtract / bitfieldInsert with runtime offset/bits,
+    # offset + bits <= 32 (bits 0 and 32 included on purpose).
+    "bitfield": ["bfe", "bfi"],
 }
 ALL_KINDS = sorted({k for ks in FAMILIES.values() for k in ks})
 
@@ -141,6 +175,21 @@ class Gen:
             return Node("broadcast", "v", [self.scalar(d)])
         if kind == "unary":
             return Node("unary", "v", [self.vec(d)], r.choice(list(UNARY_FNS)))
+        if kind == "sshr":    # int4 >> uint4 (mixed signedness, arithmetic shift)
+            return Node("sshr", "v", [self.vec(d), self.vec(d)])
+        if kind == "ushl_s":  # uint4 << int4 (mixed signedness, amount 0..31)
+            return Node("ushl_s", "v", [self.vec(d), self.vec(d)])
+        if kind == "scmp":
+            return Node("scmp", "v", [self.vec(d), self.vec(d), self.vec(d), self.vec(d)],
+                        r.choice(list(CMP_OPS)))
+        if kind == "sminmax":
+            return Node("sminmax", "v", [self.vec(d), self.vec(d)], r.choice(["min", "max"]))
+        if kind == "sfbh":
+            return Node("sfbh", "v", [self.vec(d)])
+        if kind in ("bfe", "bfi"):
+            # value(s), then two scalars X, Y: offset = X & 31, bits = Y % (33 - offset)
+            vals = [self.vec(d)] if kind == "bfe" else [self.vec(d), self.vec(d)]
+            return Node(kind, "v", vals + [self.scalar(d), self.scalar(d)])
         if kind == "dot":   # broadcast an integer dot product back to a vector
             return Node("broadcast", "v", [Node("dot", "u", [self.vec(d), self.vec(d)])])
         raise AssertionError(kind)
@@ -205,6 +254,23 @@ def to_slang(n: Node) -> str:
         return f"dot({p(c[0])}, {p(c[1])})"
     if k == "comp":
         return f"({p(c[0])}).{n.arg}"
+    if k == "sshr":
+        return f"uint4(int4({p(c[0])}) >> ({p(c[1])} & 31u))"
+    if k == "ushl_s":
+        return f"({p(c[0])} << int4({p(c[1])} & 31u))"
+    if k == "scmp":
+        return f"select(int4({p(c[0])}) {n.arg} int4({p(c[1])}), {p(c[2])}, {p(c[3])})"
+    if k == "sminmax":
+        return f"uint4({n.arg}(int4({p(c[0])}), int4({p(c[1])})))"
+    if k == "sfbh":
+        return f"firstbithigh(int4({p(c[0])}))"
+    if k in ("bfe", "bfi"):
+        x, y = p(c[-2]), p(c[-1])
+        off = f"({x} & 31u)"
+        bits = f"({y} % (33u - ({x} & 31u)))"
+        if k == "bfe":
+            return f"bitfieldExtract({p(c[0])}, {off}, {bits})"
+        return f"bitfieldInsert({p(c[0])}, {p(c[1])}, {off}, {bits})"
     raise AssertionError(k)
 
 
@@ -262,6 +328,26 @@ def evaluate(n: Node, env: dict):
         return sum(x * y for x, y in zip(v, w)) & M32
     if k == "comp":
         return e(c[0])[SWZ.index(n.arg)]
+    if k == "sshr":
+        return vmap(lambda x, y: (_signed(x) >> (y & 31)) & M32, e(c[0]), e(c[1]))
+    if k == "ushl_s":
+        return vmap(lambda x, y: (x << (y & 31)) & M32, e(c[0]), e(c[1]))
+    if k == "scmp":
+        f = CMP_OPS[n.arg]
+        return vmap(lambda x, y, t, u: t if f(_signed(x), _signed(y)) else u,
+                    e(c[0]), e(c[1]), e(c[2]), e(c[3]))
+    if k == "sminmax":
+        f = min if n.arg == "min" else max
+        return vmap(lambda x, y: f(_signed(x), _signed(y)) & M32, e(c[0]), e(c[1]))
+    if k == "sfbh":
+        return vmap(_sfbh, e(c[0]))
+    if k in ("bfe", "bfi"):
+        x, y = e(c[-2]), e(c[-1])
+        off = x & 31
+        bits = y % (33 - off)
+        if k == "bfe":
+            return vmap(lambda v: _bfe(v, off, bits), e(c[0]))
+        return vmap(lambda b, i: _bfi(b, i, off, bits), e(c[0]), e(c[1]))
     raise AssertionError(k)
 
 
