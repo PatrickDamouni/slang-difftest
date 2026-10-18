@@ -1,0 +1,156 @@
+{
+ "batches": 40,
+ "functions": 1280,
+ "counts": {
+  "fixed_by_patch": 605,
+  "narrowed": 0,
+  "kosmickrisp_only": 0,
+  "other": 0,
+  "unscorable": 0
+ },
+ "examples": {
+  "fixed_by_patch": [
+   {
+    "seed": 900127003,
+    "kind": "cpp_codegen_invalid",
+    "fn": null,
+    "layer": null,
+    "bad_paths": null,
+    "expr": null,
+    "example": null,
+    "detail": "<repo>/work/bitfield-900127003/kernel.slang:8:267: error: invalid operands to binary expression ('Vector<uint, 4>' (aka 'Vector<unsigned int, 4>') and 'unsigned int')"
+   },
+   {
+    "seed": 900127003,
+    "kind": "metal_metal_reject",
+    "fn": null,
+    "layer": null,
+    "bad_paths": null,
+    "expr": null,
+    "example": null,
+    "detail": "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
+   },
+   {
+    "seed": 900127003,
+    "kind": "mismatch",
+    "fn": 0,
+    "layer": "Slang Metal codegen",
+    "bad_paths": [
+     "metal"
+    ],
+    "expr": "bitfieldInsert(bitfieldExtract(bitfieldExtract(b, (((a).z + s) & 31u), ((b).y % (33u - (((a).z + s) & 31u)))), ((b).z & 31u), ((b).x % (33u - ((b).z & 31u)))), bitfieldInsert(a, bitfieldExtract(bitfieldInsert(b, b, ((b).w & 31u), ((a).y % (33u - ((b).w & 31u)))), ((b).w & 31u), ((s + s) % (33u - ((b).w & 31u)))), (s & 31u), (s % (33u - (s & 31u)))), (s & 31u), (s % (33u - (s & 31u))))",
+    "example": {
+     "thread": 60,
+     "a": [
+      "0x1",
+      "0x8b3b0575",
+      "0x80000001",
+      "0x20"
+     ],
+     "b": [
+      "0x20",
+      "0xb7b9d0d",
+      "0xf9a3b8a",
+      "0x5a35bd99"
+     ],
+     "s": "0x20",
+     "ref": [
+      "0x0",
+      "0x0",
+      "0x0",
+      "0x0"
+     ],
+     "metal": [
+      "0x0",
+      "0x3",
+      "0x7",
+      "0x7"
+     ]
+    },
+    "detail": ""
+   },
+   {
+    "seed": 900127003,
+    "kind": "mismatch",
+    "fn": 1,
+    "layer": "Slang Metal codegen",
+    "bad_paths": [
+     "metal"
+    ],
+    "expr": "bitfieldInsert(bitfieldExtract(bitfieldExtract(bitfieldInsert(a, b, ((b).z & 31u), (s % (33u - ((b).z & 31u)))), (s & 31u), ((b).z % (33u - (s & 31u)))), ((a).y & 31u), (s % (33u - ((a).y & 31u)))), bitfieldInsert(a, b, (s & 31u), ((b).x % (33u - (s & 31u)))), (((a).x | (b).z) & 31u), ((b).w % (33u - (((a).x | (b).z) & 31u))))",
+    "example": {
+     "thread": 60,
+     "a": [
+      "0x1",
+      "0x8b3b0575",
+      "0x80000001",
+      "0x20"
+     ],
+     "b": [
+      "0x20",
+      "0xb7b9d0d",
+      "0xf9a3b8a",
+      "0x5a35bd99"
+     ],
+     "s": "0x20",
+     "ref": [
+      "0x10000",
+      "0x1ce86819",
+      "0x11dc5000",
+      "0x2decc800"
+     ],
+     "metal": [
+      "0x800",
+      "0x182ba819",
+      "0x800",
+      "0x10000"
+     ]
+    },
+    "detail": ""
+   },
+   {
+    "seed": 900127003,
+    "kind": "mismatch",
+    "fn": 5,
+    "layer": "Slang Metal codegen",
+    "bad_paths": [
+     "metal"
+    ],
+    "expr": "bitfieldExtract(a, ((a).y & 31u), ((bitfieldExtract(bitfieldInsert(a, b, ((b).z & 31u), ((a).x % (33u - ((b).z & 31u)))), ((b).x & 31u), (s % (33u - ((b).x & 31u))))).y % (33u - ((a).y & 31u))))",
+    "example": {
+     "thread": 60,
+     "a": [
+      "0x1",
+      "0x8b3b0575",
+      "0x80000001",
+      "0x20"
+     ],
+     "b": [
+      "0x20",
+      "0xb7b9d0d",
+      "0xf9a3b8a",
+      "0x5a35bd99"
+     ],
+     "s": "0x20",
+     "ref": [
+      "0x0",
+      "0x19",
+      "0x0",
+      "0x0"
+     ],
+     "metal": [
+      "0x0",
+      "0x0",
+      "0x0",
+      "0x0"
+     ]
+    },
+    "detail": ""
+   }
+  ],
+  "narrowed": [],
+  "kosmickrisp_only": [],
+  "other": [],
+  "unscorable": []
+ }
+}

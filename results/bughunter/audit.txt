@@ -1,0 +1,24 @@
+agent-a86078f0647f09f4f.jsonl: 37 tool calls {'Bash': 34, 'SubagentHandback': 1, 'Write': 2}
+  clean: no web access, no paths outside the workspace
+agent-af7e23efa483471de.jsonl: 47 tool calls {'Bash': 44, 'Read': 1, 'SubagentHandback': 1, 'Write': 1}
+  clean: no web access, no paths outside the workspace
+agent-a8ba39410fd689294.jsonl: 76 tool calls {'Bash': 75, 'Write': 1}
+  clean: no web access, no paths outside the workspace
+agent-a95364333defa352f.jsonl: 33 tool calls {'Bash': 31, 'SubagentHandback': 1, 'Write': 1}
+  clean: no web access, no paths outside the workspace
+agent-a1bd46b1fbd3539dd.jsonl: 34 tool calls {'Bash': 34}
+  clean: no web access, no paths outside the workspace
+agent-a3cc7f2bd6c3be57f.jsonl: 31 tool calls {'Bash': 31}
+  clean: no web access, no paths outside the workspace
+agent-a45e2565637ba185a.jsonl: 29 tool calls {'Bash': 29}
+  clean: no web access, no paths outside the workspace
+agent-a991a75838055f7b5.jsonl: 32 tool calls {'Bash': 32}
+  clean: no web access, no paths outside the workspace
+agent-a4396279222d61d82.jsonl: 57 tool calls {'Bash': 53, 'Read': 1, 'SubagentHandback': 1, 'Write': 1, 'mcp__ccd_turn__update_plan': 1}
+  clean: no web access, no paths outside the workspace
+agent-a9ed57f6395b591fb.jsonl: 37 tool calls {'Bash': 35, 'SubagentHandback': 1, 'Write': 1}
+  clean: no web access, no paths outside the workspace
+agent-a413c6f65ba1a8691.jsonl: 48 tool calls {'Bash': 45, 'SubagentHandback': 1, 'Write': 2}
+  clean: no web access, no paths outside the workspace
+agent-a3e741db390bc391c.jsonl: 45 tool calls {'Bash': 43, 'SubagentHandback': 1, 'Write': 1}
+  clean: no web access, no paths outside the workspace
