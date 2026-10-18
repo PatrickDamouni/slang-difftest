@@ -7,7 +7,7 @@ Reproduce everything with `python3 -m difftest.repros` (expected vs. actual per 
 | **A** | Slang: `bitfieldInsert` text expansion lacks outer parentheses | silent wrong values on Metal; compile errors on Metal and C++ | slangc 2026.18.3, 2026.19 (latest release), `master` 3a93b38 built from source |
 | **B** | Slang: bitfield mask `(1 << bits) - 1` at `bits == 32` | silent wrong values on Metal | same three |
 | **C** | Mesa KosmicKrisp: SPIR-V integer ops emitted as signed `int` arithmetic in MSL | silent wrong values | KosmicKrisp in SDK 1.4.363.0; the same emission code is on Mesa `main` (read 2026-10-16) |
-| known | Slang #13553: mixed-signedness vector shifts on the C++ target | C++ compile error | rediscovered by the `signed` family; fix PR #13684 still open |
+| known | Slang #13553: mixed-signedness vector shifts on the CPU/CUDA targets | C++ compile error | rediscovered by the `signed` family; fixed upstream by PR #13684 (merged 2026-10-16, after the SDK build tested here) |
 
 **Prior reports.** Searches of the Slang tracker found nothing matching A or B (queries: "bitfieldInsert metal", "bitfieldExtract 32", "bitfield full width", "metal precedence", …). The closest are [#10299](https://github.com/shader-slang/slang/pull/10299) (same emitter, different problem) and [#5858](https://github.com/shader-slang/slang/issues/5858) (open: add more bitfield tests). Searches of the Mesa tracker ("kosmickrisp overflow / signed / ineg / miscompil / undefined behavior") found nothing matching C.
 

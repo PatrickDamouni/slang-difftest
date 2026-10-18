@@ -17,6 +17,13 @@ Which paths disagree tells you which layer is broken:
 - only one Vulkan driver → that driver
 - only C++ → Slang's C++ target
 
+> **New: [slang-bughunter](docs/bughunter/README.md).** Eight Claude agents, working in a stripped copy of this repo, wrote new test-family plugins. A deterministic gate admitted every plugin, and I reproduced every claim myself.
+> - 2 of 4 round-1 agents rediscovered bugs A and B without having seen them.
+> - The agents surfaced **13 new candidate Slang root causes**, 7 of them silent wrong results. They include a `uint64` constant-folding bug and `abs(uint)` miscompiled on SPIR-V.
+> - They also found **1 confirmed Apple Metal compiler bug**.
+>
+> The write-up covers what the agents were told, the controls and their limits: [docs/bughunter/README.md](docs/bughunter/README.md).
+
 **Results so far** (details and root causes in [FINDINGS.md](FINDINGS.md)):
 
 | | finding | effect |
@@ -24,7 +31,7 @@ Which paths disagree tells you which layer is broken:
 | **A** | Slang `bitfieldInsert(...)` + swizzle is mis-parenthesised | **silent wrong results** on Metal; compile errors on Metal (`.xy`) and C++ |
 | **B** | Slang bitfield mask `(1u << bits) - 1u` at `bits == 32` | **silent wrong results** on Metal: `bitfieldExtract(x,0,32)` → 0 |
 | **C** | KosmicKrisp emits SPIR-V integer ops as signed `int` in MSL, where wrap-around is undefined | **silent wrong results**: unsigned `b == -b` at `b = 0x80000000` |
-| known | Slang #13553 (mixed-signedness vector shifts, C++) | rediscovered automatically |
+| known | Slang #13553 (mixed-signedness vector shifts, CPU/CUDA) | rediscovered automatically; fixed upstream by #13684 (2026-10-16) |
 
 A and B reproduce on the latest Slang release (v2026.19) and on `master` built from source. A patch fixing both is verified locally: 0 Metal findings on the same seeds, and a new regression test passes on Metal. Nothing has been filed upstream yet. Drafts are in [`docs/issue-drafts/`](docs/issue-drafts/) and [`docs/upstream/`](docs/upstream/). Evidence logs are in [`results/evidence/`](results/evidence/).
 
