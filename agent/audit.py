@@ -26,7 +26,8 @@ from pathlib import Path
 WEB_TOOLS = {"WebSearch", "WebFetch"}
 WEB_SHELL = re.compile(r"\b(curl|wget|git\s+clone|gh\s+api|pip\s+install|brew)\b")
 FORBIDDEN_TEXT = re.compile(r"slang-difftest|_slang-src|\.claude")
-ABS_PATH = re.compile(r"(?<![\w.])(?:/Users/[^\s'\"`;|&)\\]+|~/[^\s'\"`;|&)\\]*)")
+# Absolute paths under a home directory (macOS or Linux), and ~-relative paths.
+ABS_PATH = re.compile(r"(?<![\w.])(?:/(?:Users|home)/[^\s'\"`;|&)\\]+|~/[^\s'\"`;|&)\\]*)")
 # The toolchain the engine itself uses: its binaries (slangc, spirv-val, spirv-dis) and the
 # Slang C++ prelude headers the C++ compile check includes. Neither says anything about the
 # hidden findings.
