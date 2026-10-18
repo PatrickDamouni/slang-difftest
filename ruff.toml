@@ -1,0 +1,6 @@
+line-length = 120
+extend-exclude = ["agent/families", "agent/examples"]
+
+[lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]

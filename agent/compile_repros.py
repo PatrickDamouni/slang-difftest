@@ -70,7 +70,7 @@ def check(case: dict, work: Path) -> tuple[bool, str]:
     else:
         text = out.read_text()
     m = re.search(pattern, text)
-    first = next((l for l in text.splitlines() if re.search(pattern, l)), "")
+    first = next((line for line in text.splitlines() if re.search(pattern, line)), "")
     return bool(m), first.strip()[:200]
 
 

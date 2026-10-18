@@ -1,0 +1,25 @@
+name: ci
+
+# The GPU paths need Apple Silicon and the Vulkan SDK, so CI covers what runs
+# anywhere: the reference evaluator, the plugin lint, the planted-fault
+# rewrite, blind-workspace stripping and the transcript audit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Lint
+        run: pip install ruff==0.6.9 && ruff check .
+      - name: Unit tests
+        run: python -m unittest discover -s tests -t . -v

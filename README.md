@@ -1,5 +1,7 @@
 # slang-difftest
 
+[![ci](https://github.com/PatrickDamouni/slang-difftest/actions/workflows/ci.yml/badge.svg)](https://github.com/PatrickDamouni/slang-difftest/actions/workflows/ci.yml)
+
 **Differential testing for the [Slang](https://github.com/shader-slang/slang) shader compiler across three GPU paths on Apple Silicon.** Slang is the shading language NVIDIA contributed to Khronos.
 
 ```
@@ -42,6 +44,7 @@ Needs Apple Silicon, macOS 26+, the Xcode command-line tools, and the [LunarG Vu
 ```bash
 make                                   # builds the two GPU runners
 make selftest                          # proves the harness: clean run + planted faults
+python3 -m unittest discover -s tests -t .   # GPU-free tests (also run in CI)
 python3 -m difftest.repros             # the minimal reproducers, expected vs actual per path
 python3 -m difftest.run fuzz --family bitfield --batches 10
 python3 -m difftest.reduce --family bitfield --seed 300013 --oracle metal_reject
