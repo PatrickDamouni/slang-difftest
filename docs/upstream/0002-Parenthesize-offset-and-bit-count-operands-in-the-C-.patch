@@ -1,4 +1,4 @@
-From 6f6945e67d524359e4d3b7d83d4cfe301074b1a7 Mon Sep 17 00:00:00 2001
+From 6f7fdbadf4f03453d40313021224a3251b94330f Mon Sep 17 00:00:00 2001
 From: Patrick Damouni <285312614+PatrickDamouni@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 15:33:20 -0400
 Subject: [PATCH 2/2] Parenthesize offset and bit-count operands in the C-like
@@ -11,12 +11,12 @@ surrounding operator. Each operand is now parenthesized, and the regression
 test covers an extract count, an insert offset and a signed-extract count
 whose top-level operator binds more loosely than the expansion's.
 ---
- source/slang/slang-emit-c-like.cpp            | 36 ++++++++++++++-----
- .../bitfield-full-width-and-swizzle.slang     | 13 ++++++-
- 2 files changed, 39 insertions(+), 10 deletions(-)
+ source/slang/slang-emit-c-like.cpp            | 56 +++++++++----------
+ .../bitfield-full-width-and-swizzle.slang     | 13 ++++-
+ 2 files changed, 39 insertions(+), 30 deletions(-)
 
 diff --git a/source/slang/slang-emit-c-like.cpp b/source/slang/slang-emit-c-like.cpp
-index dd5cfd8..6bc1766 100644
+index dd5cfd8..ad833d5 100644
 --- a/source/slang/slang-emit-c-like.cpp
 +++ b/source/slang/slang-emit-c-like.cpp
 @@ -4340,6 +4340,15 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
@@ -35,30 +35,34 @@ index dd5cfd8..6bc1766 100644
  
      Slang::IRType* elementType = dataType;
      IRVectorType* vectorType = as<IRVectorType>(elementType);
-@@ -4396,11 +4405,11 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
+@@ -4396,23 +4405,15 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
  
      m_writer->emit("(");
  
 -    emitOperand(val, getInfo(EmitOp::General));
 +    emitParenthesizedOperand(val);
      m_writer->emit(">>");
-     emitVecNOrScalar(
-         vectorTypeForShiftNumber,
+-    emitVecNOrScalar(
+-        vectorTypeForShiftNumber,
 -        [&]() { emitOperand(off, getInfo(EmitOp::General)); });
-+        [&]() { emitParenthesizedOperand(off); });
++    emitVecNOrScalar(vectorTypeForShiftNumber, [&]() { emitParenthesizedOperand(off); });
  
      m_writer->emit(")&(");
      emitVecNOrScalar(
-@@ -4411,7 +4420,7 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
-                 m_writer,
-                 one,
-                 bitWidth,
+         vectorTypeForShiftNumber,
+         [&]()
+-        {
+-            _emitBitfieldMask(
+-                m_writer,
+-                one,
+-                bitWidth,
 -                [&]() { emitOperand(bts, getInfo(EmitOp::General)); });
-+                [&]() { emitParenthesizedOperand(bts); });
-         });
+-        });
++        { _emitBitfieldMask(m_writer, one, bitWidth, [&]() { emitParenthesizedOperand(bts); }); });
      m_writer->emit("))");
  
-@@ -4428,7 +4437,7 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
+     // Emit sign extension logic
+@@ -4428,7 +4429,7 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
                  m_writer->emit("(");
                  m_writer->emit(bitWidth);
                  m_writer->emit("-");
@@ -67,7 +71,7 @@ index dd5cfd8..6bc1766 100644
                  m_writer->emit(")");
              });
          m_writer->emit(")>>");
-@@ -4439,7 +4448,7 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
+@@ -4439,7 +4440,7 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
                  m_writer->emit("(");
                  m_writer->emit(bitWidth);
                  m_writer->emit("-");
@@ -76,7 +80,7 @@ index dd5cfd8..6bc1766 100644
                  m_writer->emit(")");
              });
          m_writer->emit(")");
-@@ -4457,6 +4466,15 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+@@ -4457,6 +4458,15 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
      Slang::IRInst* insert = inst->getOperand(1);
      Slang::IRInst* off = inst->getOperand(2);
      Slang::IRInst* bts = inst->getOperand(3);
@@ -92,33 +96,42 @@ index dd5cfd8..6bc1766 100644
  
  
      Slang::IRType* elementType = dataType;
-@@ -4528,9 +4546,9 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
-                 m_writer,
-                 one,
-                 bitWidth,
+@@ -4524,13 +4534,9 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+         [&]()
+         {
+             m_writer->emit("~(");
+-            _emitBitfieldMask(
+-                m_writer,
+-                one,
+-                bitWidth,
 -                [&]() { emitOperand(bts, getInfo(EmitOp::General)); });
-+                [&]() { emitParenthesizedOperand(bts); });
++            _emitBitfieldMask(m_writer, one, bitWidth, [&]() { emitParenthesizedOperand(bts); });
              m_writer->emit("<<");
 -            emitOperand(off, getInfo(EmitOp::General));
 +            emitParenthesizedOperand(off);
              m_writer->emit(")");
          });
  
-@@ -4561,7 +4579,7 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
-                 m_writer,
-                 one,
-                 bitWidth,
--                [&]() { emitOperand(bts, getInfo(EmitOp::General)); });
-+                [&]() { emitParenthesizedOperand(bts); });
-         });
-     m_writer->emit(")");
- 
-@@ -4569,7 +4587,7 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
-     m_writer->emit("<<");
+@@ -4556,20 +4562,12 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
      emitVecNOrScalar(
          vectorTypeForShiftNumber,
+         [&]()
+-        {
+-            _emitBitfieldMask(
+-                m_writer,
+-                one,
+-                bitWidth,
+-                [&]() { emitOperand(bts, getInfo(EmitOp::General)); });
+-        });
++        { _emitBitfieldMask(m_writer, one, bitWidth, [&]() { emitParenthesizedOperand(bts); }); });
+     m_writer->emit(")");
+ 
+     // then emit shift := << offset
+     m_writer->emit("<<");
+-    emitVecNOrScalar(
+-        vectorTypeForShiftNumber,
 -        [&]() { emitOperand(off, getInfo(EmitOp::General)); });
-+        [&]() { emitParenthesizedOperand(off); });
++    emitVecNOrScalar(vectorTypeForShiftNumber, [&]() { emitParenthesizedOperand(off); });
      m_writer->emit(")");
  
      if (isSigned)

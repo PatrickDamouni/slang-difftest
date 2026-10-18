@@ -62,6 +62,7 @@ Both problems are in the text expansions `CLikeSourceEmitter` uses for `kIROp_Bi
   - **Pre-existing, unchanged by this patch:** `bitfield-insert-extract-non32bit.slang` fails `-target dxil` with "unexpected IR opcode" with or without it, and that test declares only `-vk`.
 - **Operand parentheses.** The three new checks give `0x102`, `0xDEADBFAE`, `0xFFFDBEEF` on Metal unpatched and `0xBEE`, `0xDEADBFAF`, `0xFEADBEEF` patched.
 - **Fuzzing.** On 1,280 generated functions (40 kernels) the unpatched compiler gives 117 Metal value mismatches and 12 Metal compile rejections; the patched compiler gives 0 of each. On 320 bitfield-only functions: 129 mismatches and 10 rejections unpatched, 0 patched. A second generator that varies the operand expressions more widely produced 946 findings in 1,280 functions: the mask and outer-parentheses fixes alone remove 480 of them, and adding operand parentheses removes 945. The remaining one is downstream of Slang (see below).
+- **Formatting.** `git clang-format` with clang-format 17.0.6 (the version `extras/formatting.sh` pins) reports no changes.
 - **Not changed.** Two edge cases still shift by the full width in the expansion:
   - the value shift when `offset == 32` (with `bits == 0`);
   - the signed-extract sign extension when `bits == 0`.
