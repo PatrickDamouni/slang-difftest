@@ -83,6 +83,7 @@ UNARY_FNS = {
 SWZ = "xyzw"
 
 
+# <hand:signed-bitfield>
 def _signed(x: int) -> int:
     x &= M32
     return x - (1 << 32) if x & 0x80000000 else x
@@ -108,6 +109,7 @@ def _bfe(value: int, off: int, bits: int) -> int:
 def _bfi(base: int, ins: int, off: int, bits: int) -> int:
     m = (_mask(bits) << off) & M32
     return (base & ~m & M32) | ((ins << off) & m)
+# </hand:signed-bitfield>
 
 # Feature families: the generator can be restricted to one at a time, so a
 # planted or real bug is attributed to a small set of constructs.
@@ -119,6 +121,7 @@ FAMILIES = {
     "swizzle": ["swizzle", "construct", "broadcast"],
     "bits": ["unary"],
     "dot": ["dot"],
+    # <hand:signed-bitfield>
     # Signed and mixed-signedness integer ops, written as uint4 -> int4 -> uint4
     # so the AST stays uint4-typed. Excluded because they are undefined for
     # signed ints in C++/MSL: left shift of negatives, overflow, INT_MIN / -1.
@@ -126,8 +129,22 @@ FAMILIES = {
     # bitfieldExtract / bitfieldInsert with runtime offset/bits,
     # offset + bits <= 32 (bits 0 and 32 included on purpose).
     "bitfield": ["bfe", "bfi"],
+    # </hand:signed-bitfield>
 }
 ALL_KINDS = sorted({k for ks in FAMILIES.values() for k in ks})
+
+# Plugin families (difftest/plugins.py loads them). A plugin adds node kinds and
+# provides, for each one, a generator, a Slang printer and a Python reference,
+# so plugin programs keep the one-AST-two-printers guarantee.
+PLUGINS: dict = {}
+
+
+def register_plugin(mod) -> None:
+    for kind in mod.KINDS:
+        if kind in ALL_KINDS or kind in PLUGINS:
+            raise ValueError(f"plugin kind {kind!r} clashes with an existing kind")
+        PLUGINS[kind] = mod
+    FAMILIES[mod.NAME] = list(mod.KINDS)
 
 # ------------------------------------------------------------------ generator
 
@@ -138,12 +155,19 @@ class Gen:
         self.kinds = kinds or ALL_KINDS
         self.max_depth = max_depth
 
+    @staticmethod
+    def node(kind: str, ty: str, kids: list, arg=None) -> "Node":
+        """Constructor exposed to plugins, which may not import this module."""
+        return Node(kind, ty, kids, arg)
+
     def vec(self, depth: int = 0) -> Node:
         if depth >= self.max_depth or self.r.random() < 0.15 + 0.15 * depth:
             return leaf(self.r.choice("ab"))
         kind = self.r.choice(self.kinds)
         d = depth + 1
         r = self.r
+        if kind in PLUGINS:
+            return PLUGINS[kind].generate(self, kind, d)
         if kind == "bin":
             return Node("bin", "v", [self.vec(d), self.vec(d)], r.choice(list(BIN_OPS)))
         if kind == "bin_vs":   # vector op scalar (implicit broadcast)
@@ -177,6 +201,7 @@ class Gen:
             return Node("broadcast", "v", [self.scalar(d)])
         if kind == "unary":
             return Node("unary", "v", [self.vec(d)], r.choice(list(UNARY_FNS)))
+        # <hand:signed-bitfield>
         if kind == "sshr":    # int4 >> uint4 (mixed signedness, arithmetic shift)
             return Node("sshr", "v", [self.vec(d), self.vec(d)])
         if kind == "ushl_s":  # uint4 << int4 (mixed signedness, amount 0..31)
@@ -192,6 +217,7 @@ class Gen:
             # value(s), then two scalars X, Y: offset = X & 31, bits = Y % (33 - offset)
             vals = [self.vec(d)] if kind == "bfe" else [self.vec(d), self.vec(d)]
             return Node(kind, "v", vals + [self.scalar(d), self.scalar(d)])
+        # </hand:signed-bitfield>
         if kind == "dot":   # broadcast an integer dot product back to a vector
             return Node("broadcast", "v", [Node("dot", "u", [self.vec(d), self.vec(d)])])
         raise AssertionError(kind)
@@ -221,6 +247,8 @@ def to_slang(n: Node) -> str:
     p = to_slang
     if k == "var":
         return n.arg
+    if k in PLUGINS:
+        return PLUGINS[k].to_slang(n, p)
     if k == "bin":
         return f"({p(c[0])} {n.arg} {p(c[1])})"
     if k == "neg":
@@ -256,6 +284,7 @@ def to_slang(n: Node) -> str:
         return f"dot({p(c[0])}, {p(c[1])})"
     if k == "comp":
         return f"({p(c[0])}).{n.arg}"
+    # <hand:signed-bitfield>
     if k == "sshr":
         return f"uint4(int4({p(c[0])}) >> ({p(c[1])} & 31u))"
     if k == "ushl_s":
@@ -273,6 +302,7 @@ def to_slang(n: Node) -> str:
         if k == "bfe":
             return f"bitfieldExtract({p(c[0])}, {off}, {bits})"
         return f"bitfieldInsert({p(c[0])}, {p(c[1])}, {off}, {bits})"
+    # </hand:signed-bitfield>
     raise AssertionError(k)
 
 
@@ -289,6 +319,8 @@ def evaluate(n: Node, env: dict):
 
     if k == "var":
         return env[n.arg]
+    if k in PLUGINS:
+        return PLUGINS[k].evaluate(n, e, vmap)
     if k == "bin":
         return vmap(BIN_OPS[n.arg], e(c[0]), e(c[1]))
     if k == "neg":
@@ -330,6 +362,7 @@ def evaluate(n: Node, env: dict):
         return sum(x * y for x, y in zip(v, w)) & M32
     if k == "comp":
         return e(c[0])[SWZ.index(n.arg)]
+    # <hand:signed-bitfield>
     if k == "sshr":
         return vmap(lambda x, y: (_signed(x) >> (y & 31)) & M32, e(c[0]), e(c[1]))
     if k == "ushl_s":
@@ -350,6 +383,7 @@ def evaluate(n: Node, env: dict):
         if k == "bfe":
             return vmap(lambda v: _bfe(v, off, bits), e(c[0]))
         return vmap(lambda b, i: _bfi(b, i, off, bits), e(c[0]), e(c[1]))
+    # </hand:signed-bitfield>
     raise AssertionError(k)
 
 

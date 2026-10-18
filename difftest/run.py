@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import ast as A
+from . import plugins
 
 ROOT = Path(__file__).resolve().parent.parent
 SDK = Path(os.environ.get("VULKAN_SDK", Path.home() / "VulkanSDK/1.4.363.0/macOS"))
@@ -366,16 +367,23 @@ def bucket(fd: dict) -> tuple:
 def cmd_fuzz(args):
     global SLANGC_VERSION
     SLANGC_VERSION = slangc_version()
+    for path in args.plugin or []:
+        plugins.load(Path(path))
+    if args.family != "all" and args.family not in A.FAMILIES:
+        sys.exit(f"unknown family {args.family!r}; known: {sorted(A.FAMILIES)}")
     kinds = A.FAMILIES[args.family] if args.family != "all" else None
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    log = ROOT / f"results/raw-{stamp}-{args.family}.jsonl"
+    log = Path(args.log) if args.log else ROOT / f"results/raw-{stamp}-{args.family}.jsonl"
     log.parent.mkdir(exist_ok=True)
     totals = {"batches": 0, "functions": 0, "findings": 0}
     buckets = {}
     t0 = time.monotonic()
     print(f"slangc {SLANGC_VERSION} ({SLANGC})", flush=True)
+    deadline = time.monotonic() + args.minutes * 60 if args.minutes else None
     with log.open("w") as f:
         for bi in range(args.batches):
+            if deadline and time.monotonic() > deadline:
+                break
             seed = args.seed * 100003 + bi
             wd = WORK / f"{args.family}-{seed}"
             r = run_batch(seed, args.k, kinds, wd)
@@ -448,7 +456,10 @@ def main():
     f = sub.add_parser("fuzz")
     f.add_argument("--batches", type=int, default=10)
     f.add_argument("--k", type=int, default=32)
-    f.add_argument("--family", default="all", choices=["all", *A.FAMILIES])
+    f.add_argument("--family", default="all", help="a built-in family, a plugin's NAME, or 'all'")
+    f.add_argument("--plugin", action="append", help="path to a family plugin (repeatable)")
+    f.add_argument("--minutes", type=float, default=0, help="stop after this many minutes")
+    f.add_argument("--log", default="", help="write the JSONL log here")
     f.add_argument("--seed", type=int, default=1)
     f.add_argument("--keep-work", action="store_true", help="keep work/ dirs of batches with no findings")
     sub.add_parser("selftest")
