@@ -1,0 +1,167 @@
+From 6f6945e67d524359e4d3b7d83d4cfe301074b1a7 Mon Sep 17 00:00:00 2001
+From: Patrick Damouni <285312614+PatrickDamouni@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 15:33:20 -0400
+Subject: [PATCH 2/2] Parenthesize offset and bit-count operands in the C-like
+ bitfield expansions
+
+The offset and bit-count operands of bitfieldExtract/bitfieldInsert were
+spliced into fixed infix text such as `1<<bits` and `(32-bits)` without
+parentheses, so a folded operand like `bits | 4` re-associated with the
+surrounding operator. Each operand is now parenthesized, and the regression
+test covers an extract count, an insert offset and a signed-extract count
+whose top-level operator binds more loosely than the expansion's.
+---
+ source/slang/slang-emit-c-like.cpp            | 36 ++++++++++++++-----
+ .../bitfield-full-width-and-swizzle.slang     | 13 ++++++-
+ 2 files changed, 39 insertions(+), 10 deletions(-)
+
+diff --git a/source/slang/slang-emit-c-like.cpp b/source/slang/slang-emit-c-like.cpp
+index dd5cfd8..6bc1766 100644
+--- a/source/slang/slang-emit-c-like.cpp
++++ b/source/slang/slang-emit-c-like.cpp
+@@ -4340,6 +4340,15 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
+     Slang::IRInst* val = inst->getOperand(0);
+     Slang::IRInst* off = inst->getOperand(1);
+     Slang::IRInst* bts = inst->getOperand(2);
++    // The operands are spliced into fixed infix text such as `1<<bits` or `(32-bits)`, so each one
++    // is parenthesized: a folded operand like `s & 7` would otherwise re-associate with the
++    // surrounding operator (`1<<s & 7` parses as `(1<<s) & 7`).
++    auto emitParenthesizedOperand = [&](IRInst* operand)
++    {
++        m_writer->emit("(");
++        emitOperand(operand, getInfo(EmitOp::General));
++        m_writer->emit(")");
++    };
+ 
+     Slang::IRType* elementType = dataType;
+     IRVectorType* vectorType = as<IRVectorType>(elementType);
+@@ -4396,11 +4405,11 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
+ 
+     m_writer->emit("(");
+ 
+-    emitOperand(val, getInfo(EmitOp::General));
++    emitParenthesizedOperand(val);
+     m_writer->emit(">>");
+     emitVecNOrScalar(
+         vectorTypeForShiftNumber,
+-        [&]() { emitOperand(off, getInfo(EmitOp::General)); });
++        [&]() { emitParenthesizedOperand(off); });
+ 
+     m_writer->emit(")&(");
+     emitVecNOrScalar(
+@@ -4411,7 +4420,7 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
+                 m_writer,
+                 one,
+                 bitWidth,
+-                [&]() { emitOperand(bts, getInfo(EmitOp::General)); });
++                [&]() { emitParenthesizedOperand(bts); });
+         });
+     m_writer->emit("))");
+ 
+@@ -4428,7 +4437,7 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
+                 m_writer->emit("(");
+                 m_writer->emit(bitWidth);
+                 m_writer->emit("-");
+-                emitOperand(bts, getInfo(EmitOp::General));
++                emitParenthesizedOperand(bts);
+                 m_writer->emit(")");
+             });
+         m_writer->emit(")>>");
+@@ -4439,7 +4448,7 @@ void CLikeSourceEmitter::emitBitfieldExtractImpl(IRInst* inst)
+                 m_writer->emit("(");
+                 m_writer->emit(bitWidth);
+                 m_writer->emit("-");
+-                emitOperand(bts, getInfo(EmitOp::General));
++                emitParenthesizedOperand(bts);
+                 m_writer->emit(")");
+             });
+         m_writer->emit(")");
+@@ -4457,6 +4466,15 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+     Slang::IRInst* insert = inst->getOperand(1);
+     Slang::IRInst* off = inst->getOperand(2);
+     Slang::IRInst* bts = inst->getOperand(3);
++    // The operands are spliced into fixed infix text such as `1<<bits` or `(32-bits)`, so each one
++    // is parenthesized: a folded operand like `s & 7` would otherwise re-associate with the
++    // surrounding operator (`1<<s & 7` parses as `(1<<s) & 7`).
++    auto emitParenthesizedOperand = [&](IRInst* operand)
++    {
++        m_writer->emit("(");
++        emitOperand(operand, getInfo(EmitOp::General));
++        m_writer->emit(")");
++    };
+ 
+ 
+     Slang::IRType* elementType = dataType;
+@@ -4528,9 +4546,9 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+                 m_writer,
+                 one,
+                 bitWidth,
+-                [&]() { emitOperand(bts, getInfo(EmitOp::General)); });
++                [&]() { emitParenthesizedOperand(bts); });
+             m_writer->emit("<<");
+-            emitOperand(off, getInfo(EmitOp::General));
++            emitParenthesizedOperand(off);
+             m_writer->emit(")");
+         });
+ 
+@@ -4561,7 +4579,7 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+                 m_writer,
+                 one,
+                 bitWidth,
+-                [&]() { emitOperand(bts, getInfo(EmitOp::General)); });
++                [&]() { emitParenthesizedOperand(bts); });
+         });
+     m_writer->emit(")");
+ 
+@@ -4569,7 +4587,7 @@ void CLikeSourceEmitter::emitBitfieldInsertImpl(IRInst* inst)
+     m_writer->emit("<<");
+     emitVecNOrScalar(
+         vectorTypeForShiftNumber,
+-        [&]() { emitOperand(off, getInfo(EmitOp::General)); });
++        [&]() { emitParenthesizedOperand(off); });
+     m_writer->emit(")");
+ 
+     if (isSigned)
+diff --git a/tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang b/tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang
+index 81e5fa7..64b837d 100644
+--- a/tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang
++++ b/tests/language-feature/bitfield/bitfield-full-width-and-swizzle.slang
+@@ -5,6 +5,9 @@
+ //  2. The bitfieldInsert expansion `(base & ~mask) | (insert << off)` was not
+ //     parenthesized, so a folded swizzle bound only to the right operand of `|`
+ //     (Metal returned the wrong lanes; `.xy` failed to compile on Metal and C++).
++//  3. The offset and bit-count operands were spliced into the expansion without
++//     parentheses, so an operand such as `bits | 4` re-associated with the
++//     surrounding `1 << ...` or `32 - ...` text.
+ // Offset and bit count come from a buffer so they are not constant-folded.
+ 
+ //TEST(compute):COMPARE_COMPUTE(filecheck-buffer=CHECK):-vk -compile-arg -skip-spirv-validation -emit-spirv-directly
+@@ -22,11 +25,14 @@
+ // CHECK-NEXT: {{^}}222220B2{{$}}
+ // CHECK-NEXT: {{^}}EE{{$}}
+ // CHECK-NEXT: {{^}}DEADB0DF{{$}}
++// CHECK-NEXT: {{^}}BEE{{$}}
++// CHECK-NEXT: {{^}}DEADBFAF{{$}}
++// CHECK-NEXT: {{^}}FEADBEEF{{$}}
+ 
+ //TEST_INPUT:ubuffer(data=[0 32 4 8], stride=4):name=params
+ StructuredBuffer<uint> params;
+ 
+-//TEST_INPUT:ubuffer(data=[0 0 0 0 0 0 0 0], stride=4):out,name=outputBuffer
++//TEST_INPUT:ubuffer(data=[0 0 0 0 0 0 0 0 0 0 0], stride=4):out,name=outputBuffer
+ RWStructuredBuffer<uint> outputBuffer;
+ 
+ [numthreads(1, 1, 1)]
+@@ -56,4 +62,9 @@ void computeMain()
+     // Ordinary widths still work.
+     outputBuffer[6] = bitfieldExtract(v, off, bits);
+     outputBuffer[7] = bitfieldInsert(v, ins, off, bits);
++
++    // Operands whose top-level operator binds more loosely than the expansion's own operators.
++    outputBuffer[8] = bitfieldExtract(v, off, bits | 4u);
++    outputBuffer[9] = bitfieldInsert(v, ins, off | 1u, 4u);
++    outputBuffer[10] = uint(bitfieldExtract(int(v), fullOff, bits + 20u));
+ }
+-- 
+2.54.0
+
