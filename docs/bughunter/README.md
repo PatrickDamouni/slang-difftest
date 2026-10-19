@@ -1,18 +1,22 @@
-# slang-bughunter: 8 Claude agents wrote test generators for NVIDIA's Slang compiler
+# slang-bughunter: 8 Claude agents wrote test generators for the Slang shader compiler
 
 **Result:**
-- **Blind rediscovery.** 2 of 4 agents rediscovered both hidden Slang bugs (A and B) without having seen them.
-- **New candidates.** The agents surfaced **13 new candidate Slang bugs** (root causes, deduplicated), 7 of them silent wrong results, and **1 confirmed bug in Apple's Metal compiler**.
-- **Verification.** I reproduced every one by hand and checked it against the issue tracker. One more root cause turned out to be already reported upstream.
+- **Blind rediscovery.** 2 of 4 round-1 agents rediscovered both hidden Slang bugs (A and B) without having seen them. Each agent's report describes both bugs with a minimal example of its own ([reports](../../results/bughunter/agent-reports.md)), and the A+B patch removes 480 of r1a's 946 findings and 623 of r1d's 861.
+- **New candidates.** The agents surfaced **14 Slang root causes** (13 new, plus S3, already reported upstream), 7 of them silent wrong results, and **1 confirmed bug in Apple's Metal compiler**.
+- **Verification.** I reproduced every candidate with fixed inputs and a hand-derived expected value, except S14 (unminimized clang errors), and checked each one against the issue tracker.
 - **Status.** Nothing is filed yet.
 
 **Check it yourself:**
 - `python3 -m agent.repros` runs the GPU cases. All 19 fail on Slang 2026.18.3 (Vulkan SDK) and 2026.19.
-- `python3 -m agent.compile_repros` runs the compile-time cases. All 7 reproduce.
+- `python3 -m agent.compile_repros` runs the compile-time cases. All 8 reproduce.
+- `python3 -m agent.apple_repro` runs D1 in hand-written MSL.
 
 **How it works.** An agent reads Slang's source and writes one *plugin*: a generator of random, well-defined Slang expressions, plus an exact Python reference for them.
 
-`agent writes plugin` → `admit.py`: 5 deterministic checks → 3 GPU paths + C++ compile → `score.py`: re-run with a patched compiler → human reproduces → human files
+1. The agent writes a plugin.
+2. `admit.py` runs 5 deterministic checks.
+3. The plugin hunts on 3 GPU paths plus a C++ compile check.
+4. A human reproduces each finding and files it.
 
 The agent never judges its own work: the gate, the engine and I do.
 
@@ -26,8 +30,8 @@ The agent never judges its own work: the gate, the engine and I do.
 | S5 | `abs(0xffffffffu)` gives `1`: `abs(uint)` is emitted as GLSL.std.450 `SAbs` | SPIR-V | `N-ABS` |
 | S6 | `uint4 && uint4(1u)` folded to the left operand instead of 0/1 lanes (peephole) | all | `N-LOGIC` |
 | S7 | `0x8000000000000000ull > 1ull` folds to false: SCCP compares `uint64` constants as signed. Found by two agents independently. | all | `N-U64` |
-| S13 | `uaddCarry` fallback computes `x * y` (`glsl.meta.slang:922`); C++ output contains `_S6 = *_S3 * *_S4` | C++/CUDA/HLSL via `-allow-glsl` | source + C++ output |
-| D1 | **Apple Metal compiler:** `extract_bits(int, off, 0)` with a constant count makes the kernel skip its output store. MSL 4.1, p. 203: "If bits is zero, the result is zero". | Metal (driver) | `N-APPLE` + hand-written MSL |
+| S13 | `uaddCarry` fallback computes `x * y` (`glsl.meta.slang:922`); C++ output contains `_S6 = *_S3 * *_S4` | C++/CUDA/HLSL via `-allow-glsl` | compile `S13` |
+| D1 | **Apple Metal compiler:** `extract_bits(int, off, 0)` with a constant count makes the kernel skip its output store. MSL 4.1, p. 203: "If bits is zero, the result is zero". | Apple's compiler, reached via SPIRV-Cross's MSL (Slang's own MSL doesn't call `extract_bits`) | `agent.apple_repro`, `N-APPLE` |
 
 S6 and S7 (and S4's `int8_t` case) are wrong on every target, so differential testing *cannot* see them by construction. The agents found them because calibration flagged their reference as suspect. They read the source, kept those cases out of their generators so the family stayed honest, and reported the bug in prose.
 
@@ -48,11 +52,11 @@ All hunts use the same budget: 1,280 functions (40 batches × 32), seed 9001, st
 |---|---|---:|---:|---:|---|
 | `bitfield` | hand (earlier project) | 605 | 605 | 605 | 0 |
 | `r1a` | agent | 946 | 480 | **945** | 1: Metal part fixed; the Vulkan paths hit D1 / KosmicKrisp |
-| `r1d` | agent | 861 | 623 | **836** | 25: all contain a signed extract with a constant count of 0 (D1 / KosmicKrisp); v2 fixes the Metal path in 12 |
+| `r1d` | agent | 861 | 623 | **836** | 25: each contains a signed extract whose count is a literal `0u` (18) or folds to 0, like `s - s` or `s ^ s` (7). That is D1 / KosmicKrisp; v2 fixes the Metal path in 12. |
 
 Raw finding counts measure how often the same few bugs fire, not discovery ability. The `bitfield` family's 605 includes one Metal reject and one C++ error per batch, so it isn't directly comparable with the agents' per-function mismatches. What matters:
 - the agent families' first batch already contained findings the A/B patch removes;
-- after v1, about half of r1a's findings (465 of 946) remained;
+- after v1, about half of r1a's findings (466 of 946) remained;
 - triaging those exposed S1, a bug class the hand-written family and I had both missed.
 
 **What the agents were told.** This is the main caveat, disclosed in full.
@@ -75,7 +79,7 @@ Raw finding counts measure how often the same few bugs fire, not discovery abili
 - **Not a sandbox.** The agents had Bash with my user's permissions. Blindness rests on what the workspace contains and on the instructions.
 - **Post-hoc audit.** [`audit.py`](../../agent/audit.py) checks every tool call for web tools, network commands, and paths under my home directory outside the workspace. It reports misuse; it does not prevent it. A path built at runtime, a symlink or a short `../..` would get past it. All 12 transcripts pass ([audit.txt](../../results/bughunter/audit.txt)). Two agents bent the brief inside the workspace: they wrote probe files to `engine/work/` and ran `spirv-dis`.
 - **Gate integrity.** After the runs, every engine file, both GPU runners, AGENT.md and all 619 Slang source files in the workspace were byte-identical to a fresh rebuild. No agent modified the gate that judged it.
-- **Plugin lint.** [`plugins.py`](../../difftest/plugins.py) allows importing only `random`/`math` and rejects private attributes, dunders and frame access. It is a lint against sloppy code, not a security boundary. It was tightened after the evaluation; all 8 plugins still pass it.
+- **Plugin lint.** [`plugins.py`](../../difftest/plugins.py) (tested in CI, with the escape attempts in [`tests/test_cpu.py`](../../tests/test_cpu.py)) allows importing only `random`/`math` and rejects private attributes, dunders and frame access. It is a lint against sloppy code, not a security boundary. It was tightened after the evaluation; all 8 plugins still pass it.
 - **Calibration.** It rejects a plugin whose reference disagrees with every GPU path. A deliberately wrong plugin ([`bad_ref.py`](../../agent/examples/bad_ref.py)) is rejected.
 - **Planted fault.** A wrong value injected into the Metal output must be caught and blamed on Metal.
 - **Scoring.** [`score.py`](../../agent/score.py) re-runs each failing batch with the patched compiler. If the patched run doesn't compile or a path doesn't run, the batch is "unscorable", never "fixed".
@@ -94,7 +98,7 @@ The tracker was searched by keyword on 2026-10-18.
 |---|---|---|---|---|---|
 | S1 | bitfield operands not parenthesized | Metal, C++ | r1a, r1d | repro | **fixed in local patch v2** |
 | S2 | MSL integer promotion of 8/16-bit results (arithmetic, `f32tof16`) | Metal (+C++/CUDA: same emitter, not run) | r1b, r2c | repro | new |
-| S3 | `f16tof32` returns `half` on Metal, so the sum of two is computed in half (`2048+3` gives `2052`) | Metal | r2c | repro `N-H2F` | **known:** [#13653](https://github.com/shader-slang/slang/issues/13653) (open; reports the compile error, not the wrong value) |
+| S3 | `f16tof32` returns `half` on Metal, so the sum of two is computed in half (`2050 + 1` gives `2052`) | Metal | r2c | repro `N-H2F` | **known:** [#13653](https://github.com/shader-slang/slang/issues/13653) (open; reports the compile error, not the wrong value) |
 | S4 | `countbits` sign-extends negative `int8_t`/`int16_t` (one helper pattern, two branches) | SPIR-V; all | r1b | repro | new. HLSL defines `countbits` on `uint` only, so the bug is the cross-target inconsistency. The closest prior is [#6433](https://github.com/shader-slang/slang/issues/6433) (non-32-bit `countbits`, closed). |
 | S5 | `abs(uint)` → `SAbs` | SPIR-V | r2b | repro | new |
 | S6 | peephole folds integer-vector `&&`/`\|\|` with a constant | all | r2d | repro | new |
@@ -104,11 +108,11 @@ The tracker was searched by keyword on 2026-10-18.
 | S10 | C++ prelude lacks `I8/I16/U8/U16_firstbithigh`, `*_reversebits` and `I32_sign` | C++ | r1b, r2b | compile | new |
 | S11 | `sign(int)` lowers to MSL `sign()`, which takes only float/half | Metal | r2b | repro | new (may be "unsupported" rather than a bug) |
 | S12 | splatted functional cast `(uint4(uint(_S1)) ) & …` is parsed by Metal as a C-style cast | Metal | r2a | repro | new ([#12732](https://github.com/shader-slang/slang/issues/12732) is a different cast) |
-| S13 | `uaddCarry` fallback computes `x * y` | C++/CUDA/HLSL via `-allow-glsl` | r1d | source + C++ output | new |
+| S13 | `uaddCarry` fallback computes `x * y` | C++/CUDA/HLSL via `-allow-glsl` | r1d | compile | new |
 | S14 | integer/bool matrix ops (`!`, some binary ops) emit C++ that doesn't compile | C++ | r1c | hunt log only (clang errors) | unminimized |
 
 **Downstream of Slang** (Slang's SPIR-V is valid in each case):
-- **D1, Apple Metal compiler: confirmed.** `extract_bits(int, off, 0u)` with a constant count drops the store. I reproduced it in hand-written MSL on native Metal.
+- **D1, Apple Metal compiler: confirmed.** `extract_bits(int, off, 0u)` with a constant count drops the store; unsigned or a runtime count works. [`agent/apple_repro.py`](../../agent/apple_repro.py) shows it in hand-written MSL on native Metal.
 - **KosmicKrisp-only symptoms** (r1a, r2a, r2c, r2d): four of them.
 
   | input | KosmicKrisp gives |
@@ -144,7 +148,7 @@ The hunts understate round 2. The agents kept their strongest bugs (S5–S8, S11
 
 | | |
 |---|---|
-| agents | 8 admitted plugins. 4 round-2 attempts were stopped by a usage limit and re-run. r1c was stopped by me at the same limit after writing its plugin (15.7 min, ~247k tokens, no report). |
+| agents | 8 admitted plugins, 12 transcripts. A usage limit stopped 5 runs: the 4 first round-2 attempts, which were re-run, and r1c, which had already written its plugin (15.7 min, ~247k tokens, no report). |
 | tokens, time per agent | 128k–190k subagent tokens and 6–12 min for the 7 that finished normally |
 | GPU per 1,280-function hunt | 0.5–4 min on an M4 Pro |
 | human time | most of the cost: reproducing, deriving expected values by hand, deduplicating, searching the tracker |
@@ -154,8 +158,8 @@ The hunts understate round 2. The agents kept their strongest bugs (S5–S8, S11
 - Bucketing is by layer only, so different bugs on the same path share a bucket.
 - Attribution needs a patch per bug.
 - Prose findings need a human.
-- The subscription limit already interrupted 4 of 12 runs.
-- [`loop.py`](../../agent/loop.py) (unattended `claude -p`) is written but has not been run. It should run only under a separate macOS user, because the proposer gets a shell.
+- The subscription limit already stopped 5 of 12 runs.
+- An unattended driver (`claude -p` in a loop) is on the [`loop` branch](https://github.com/PatrickDamouni/slang-difftest/tree/loop), not on `main`, because it has not been run. It should run only under a separate macOS user, because the proposer gets a shell.
 
 ## Threats to validity
 

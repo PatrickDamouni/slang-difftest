@@ -89,11 +89,13 @@ Logs: `results/evidence/*.jsonl`. Every record carries the `slangc` version. Com
 - **Clean families.** `arith`, `shift`, `divmod`, `select`, `swizzle`, `bits` and `dot` gave 0 findings over 4,096 functions: 3,456 in single-family runs plus 640 in an early all-family run that predates the `signed`/`bitfield` families. Those runs predate per-record version logging.
 - **The C++ check is saturated.** In families that generate mixed-signedness shifts, #13553 makes nearly every batch's C++ fail first, and only the first error per batch is recorded. So the C++ check can't detect *new* C++ bugs in those families.
 
-## Verified fix for A and B (not submitted)
+## Verified fix for A, B and S1 (not submitted)
 
 `docs/upstream/0001-…patch` changes `source/slang/slang-emit-c-like.cpp`:
 - **For A:** wraps the whole `bitfieldInsert` expansion in parentheses.
 - **For B:** builds every mask with `((1 << (bits & (W-1))) - 1) | ((bits >> log2 W) * ~0)`. The second term is all ones exactly when `bits == W`, so no shift reaches the width and no subtraction wraps.
+
+`docs/upstream/0002-…patch` fixes **S1**, which the [AI agents](docs/bughunter/README.md) surfaced: it parenthesizes every offset and bit-count operand spliced into the expansion. Before the fix, `bitfieldExtract(v, off, bits | 4u)` printed `1<<bits | 4`, which parses as `(1<<bits) | 4`.
 
 The patch also adds a regression test. Built from `master` 3a93b38 on this Mac:
 
@@ -101,7 +103,7 @@ The patch also adds a regression test. Built from `master` 3a93b38 on this Mac:
 |---|---|---|
 | repros A, B1, B2 | FAIL | PASS |
 | evidence runs above | see table | see table |
-| new test `bitfield-full-width-and-swizzle.slang`, run on Metal | does not compile | 8/8 values correct |
+| new test `bitfield-full-width-and-swizzle.slang`, run on Metal | does not compile | 8/8 values correct (0001); the 3 operand checks 0002 adds pass in equivalent kernels |
 | new test, `-target wgsl` / `cpp` (+clang) / `dxil` | — | compiles |
 
 ## Not claimed

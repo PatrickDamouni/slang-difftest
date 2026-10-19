@@ -2,15 +2,15 @@
 
 [![ci](https://github.com/PatrickDamouni/slang-difftest/actions/workflows/ci.yml/badge.svg)](https://github.com/PatrickDamouni/slang-difftest/actions/workflows/ci.yml)
 
-**Differential testing for the [Slang](https://github.com/shader-slang/slang) shader compiler across three GPU paths on Apple Silicon.** Slang is the shading language NVIDIA contributed to Khronos.
+**Differential testing for the [Slang](https://github.com/shader-slang/slang) shader compiler across three GPU paths on Apple Silicon.** Slang is the shading language NVIDIA contributed to Khronos. The three paths are native Metal, MoltenVK, and KosmicKrisp (Mesa's Vulkan-on-Metal driver).
 
 ```
-                      ┌─ slangc → MSL ─────────────────────────────→ native Metal ─┐
-random, well-defined  │                                                            │   compare with
-Slang program (AST) ──┼─ slangc → SPIR-V ─┬─ MoltenVK  (SPIRV-Cross → MSL)  ─────┼── a Python reference
-        │             │                   └─ KosmicKrisp (Mesa NIR → MSL)   ─────┤   computed from the
-        │             └─ slangc → C++ ──→ clang++ (must compile)                   │   same AST
-        └────────────────────────────────────────────────────────────────────────┘
+                      ┌─ slangc → MSL ─────────────────────────────→ native Metal ──┐
+random, well-defined  │                                                             │   compare with
+Slang program (AST) ──┼─ slangc → SPIR-V ─┬─ MoltenVK    (SPIRV-Cross → MSL) ───────┼── a Python reference
+        │             │                   └─ KosmicKrisp (Mesa NIR → MSL) ──────────┤   computed from the
+        │             └─ slangc → C++ ──→ clang++ (must compile)                    │   same AST
+        └───────────────────────────────────────────────────────────────────────────┘
 ```
 
 Which paths disagree tells you which layer is broken:
@@ -19,23 +19,33 @@ Which paths disagree tells you which layer is broken:
 - only one Vulkan driver → that driver
 - only C++ → Slang's C++ target
 
-> **New: [slang-bughunter](docs/bughunter/README.md).** Eight Claude agents, working in a stripped copy of this repo, wrote new test-family plugins. A deterministic gate admitted every plugin, and I reproduced every claim myself.
-> - 2 of 4 round-1 agents rediscovered bugs A and B without having seen them.
-> - The agents surfaced **13 new candidate Slang root causes**, 7 of them silent wrong results. They include a `uint64` constant-folding bug and `abs(uint)` miscompiled on SPIR-V.
-> - They also found **1 confirmed Apple Metal compiler bug**.
->
-> The write-up covers what the agents were told, the controls and their limits: [docs/bughunter/README.md](docs/bughunter/README.md).
-
 **Results so far** (details and root causes in [FINDINGS.md](FINDINGS.md)):
 
 | | finding | effect |
 |---|---|---|
-| **A** | Slang `bitfieldInsert(...)` + swizzle is mis-parenthesised | **silent wrong results** on Metal; compile errors on Metal (`.xy`) and C++ |
+| **A** | Slang `bitfieldInsert(...)` + swizzle is mis-parenthesized | **silent wrong results** on Metal; compile errors on Metal (`.xy`) and C++ |
 | **B** | Slang bitfield mask `(1u << bits) - 1u` at `bits == 32` | **silent wrong results** on Metal: `bitfieldExtract(x,0,32)` → 0 |
 | **C** | KosmicKrisp emits SPIR-V integer ops as signed `int` in MSL, where wrap-around is undefined | **silent wrong results**: unsigned `b == -b` at `b = 0x80000000` |
 | known | Slang #13553 (mixed-signedness vector shifts, CPU/CUDA) | rediscovered automatically; fixed upstream by #13684 (2026-10-16) |
 
-A and B reproduce on the latest Slang release (v2026.19) and on `master` built from source. A patch fixing both is verified locally: 0 Metal findings on the same seeds, and a new regression test passes on Metal. Nothing has been filed upstream yet. Drafts are in [`docs/issue-drafts/`](docs/issue-drafts/) and [`docs/upstream/`](docs/upstream/). Evidence logs are in [`results/evidence/`](results/evidence/).
+What A looks like: `uint4(bitfieldInsert(a, b, off, bits).y)` with `a = (0x11111111, 0x22222222, 0x33333333, 0x44444444)`, `b = (0xA, 0xB, 0xC, 0xD)`, `off = 4`, `bits = 8`:
+
+| path | result |
+|---|---|
+| expected, and both Vulkan paths | `0x222220b2  0x222220b2  0x222220b2  0x222220b2` |
+| **native Metal** | **`0x111110b1  0x222220b2  0x333330b3  0x444440b4`** |
+
+A and B reproduce on the latest Slang release (v2026.19) and on `master` built from source. Two local patches fix A, B and a third defect in the same emitter (S1, found by the agents below). They give 0 Metal findings on the same seeds, and the regression test's values come out right on Metal. Nothing has been filed upstream yet. Drafts are in [`docs/issue-drafts/`](docs/issue-drafts/) and [`docs/upstream/`](docs/upstream/). Evidence logs are in [`results/evidence/`](results/evidence/).
+
+## AI agents extending the tester: [slang-bughunter](docs/bughunter/README.md)
+
+Eight Claude agents worked in a stripped copy of this repo, with A, B and the families that found them removed, and wrote new test-family plugins. Every plugin had to pass a deterministic admission gate before it could hunt, and I reproduced every candidate it surfaced before counting it. The exceptions are S13, checked from source and the generated C++, and S14, not yet minimized.
+- **2 of 4** round-1 agents rediscovered **A and B**, each describing both with a minimal example of its own (their [reports](results/bughunter/agent-reports.md)).
+- The agents surfaced **13 new candidate Slang root causes**, 7 of them silent wrong results. Examples: `abs(0xffffffffu)` returns `1` on SPIR-V, and `0x8000000000000000ull > 1ull` constant-folds to false on every target.
+- They found **1 Apple Metal compiler bug**, reproduced in hand-written MSL.
+- Triaging their results exposed a third bug in the same function as A, now fixed in the local patch.
+
+[The write-up](docs/bughunter/README.md) covers what the agents were told, the controls and their limits.
 
 ## Quick start
 

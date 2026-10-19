@@ -1,6 +1,6 @@
 # DRAFT — not filed. Target: https://github.com/shader-slang/slang/issues
 
-**Title:** Metal/C++: `bitfieldInsert(...)` followed by a swizzle is mis-parenthesised (silent wrong results on Metal)
+**Title:** Metal/C++: `bitfieldInsert(...)` followed by a swizzle is mis-parenthesized (silent wrong results on Metal)
 
 **Versions:** slangc 2026.18.3 (Vulkan SDK 1.4.363.0) and 2026.19; `emitBitfieldInsertImpl` unchanged on `master` (3a93b38).
 **Platform:** Apple M4 Pro, macOS 26.6.2.

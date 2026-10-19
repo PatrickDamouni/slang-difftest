@@ -26,11 +26,11 @@ Third, the offset and bit-count operands are spliced into the expansion without 
 - `bitfieldInsert(v, ins, off | 1u, 4u)` returns `0xDEADBFAE` instead of `0xDEADBFAF`;
 - `uint(bitfieldExtract(int(v), 0, bits + 20u))` returns `0xFFFDBEEF` instead of `0xFEADBEEF` (`32-bits + 20` instead of `32-(bits+20)`).
 
-Both problems reproduce with 2026.18.3, 2026.19 and `master` (3a93b38). They were found by a differential tester that compares Slang's Metal output, its SPIR-V output (run on MoltenVK and KosmicKrisp) and a reference evaluator over randomly generated well-defined functions.
+All three problems reproduce with 2026.18.3, 2026.19 and `master` (3a93b38). They were found by a differential tester that compares Slang's Metal output, its SPIR-V output (run on MoltenVK and KosmicKrisp) and a reference evaluator over randomly generated well-defined functions.
 
 ## Proposed solution
 
-Both problems are in the text expansions `CLikeSourceEmitter` uses for `kIROp_BitfieldInsert` and `kIROp_BitfieldExtract`. The IR instructions are fine; the malformed output comes entirely from the emitter's expansion, so the emitter is the layer that owns the fix.
+All three problems are in the text expansions `CLikeSourceEmitter` uses for `kIROp_BitfieldInsert` and `kIROp_BitfieldExtract`. The IR instructions are fine; the malformed output comes entirely from the emitter's expansion, so the emitter is the layer that owns the fix.
 
 1. **Parenthesization.** The insert expansion's top-level operator is `|`. When the instruction is folded into a use with a postfix operator, the swizzle is appended to the emitted text and binds only to the right operand. The extract expansion is already fully parenthesized, which is why `bitfieldExtract(...).y` is correct. We wrap the insert expansion the same way.
 2. **Full-width mask.** Both expansions build the mask as `(1 << bits) - 1`. When `bits` equals the bit width, the shift amount equals the width: that is undefined in C, C++ and MSL, and HLSL masks the shift amount so the mask becomes 0. We add `_emitBitfieldMask`, which emits `((1 << (bits & (W-1))) - 1) | ((bits >> log2 W) * ~0)`.
@@ -57,14 +57,14 @@ Both problems are in the text expansions `CLikeSourceEmitter` uses for `kIROp_Bi
 - **Parentheses.** With the example above, unpatched MSL contains `((base)&~mask)|(((ins)&m)<<off).y`; patched MSL contains `(((base)&~mask)|(((ins)&m)<<off)).y`. On Metal (Apple M4 Pro, macOS 26.6.2) the new test's `.y`/`.xy` checks fail to compile unpatched and produce `222220B2`, `111110A1`, `222220B2` patched.
 - **Mask.** Unpatched, the test's three full-width checks give `0`, `DEADBEEF`, `0` on Metal; patched, they give `DEADBEEF`, `BADF00D`, `DEADBEEF`. Ordinary widths (`EE`, `DEADB0DF`) are unchanged.
 - **Other targets.**
-  - **Run locally:** Metal execution (8/8 checks), `-target cpp` (compiles with clang), `-target dxil` (compiles), `-target wgsl` (generates).
+  - **Run locally:** Metal execution of the 8 original checks, and the 3 operand checks through equivalent kernels (slang-test is not built here), `-target cpp` (compiles with clang), `-target dxil` (compiles), `-target wgsl` (generates).
   - **Not run locally:** CUDA, D3D12 and WGPU execution, and validation of the WGSL output. These are left to CI.
   - **Pre-existing, unchanged by this patch:** `bitfield-insert-extract-non32bit.slang` fails `-target dxil` with "unexpected IR opcode" with or without it, and that test declares only `-vk`.
 - **Operand parentheses.** The three new checks give `0x102`, `0xDEADBFAE`, `0xFFFDBEEF` on Metal unpatched and `0xBEE`, `0xDEADBFAF`, `0xFEADBEEF` patched.
-- **Fuzzing.** On 1,280 generated functions (40 kernels) the unpatched compiler gives 117 Metal value mismatches and 12 Metal compile rejections; the patched compiler gives 0 of each. On 320 bitfield-only functions: 129 mismatches and 10 rejections unpatched, 0 patched. A second generator that varies the operand expressions more widely produced 946 findings in 1,280 functions: the mask and outer-parentheses fixes alone remove 480 of them, and adding operand parentheses removes 945. The remaining one is downstream of Slang (see below).
+- **Fuzzing.** On 1,280 generated functions (40 kernels) the unpatched compiler gives 117 Metal value mismatches and 12 Metal compile rejections; the patched compiler gives 0 of each. On 320 bitfield-only functions: 129 mismatches and 10 rejections unpatched, 0 patched. A second generator, written by an AI agent and reviewed by me, that varies the operand expressions more widely produced 946 findings in 1,280 functions: the mask and outer-parentheses fixes alone remove 480 of them, and adding operand parentheses removes 945. The remaining one is downstream of Slang: an Apple Metal compiler issue with a constant zero bit count, reached through SPIRV-Cross's MSL.
 - **Formatting.** `git clang-format` with clang-format 17.0.6 (the version `extras/formatting.sh` pins) reports no changes.
 - **Not changed.** Two edge cases still shift by the full width in the expansion:
   - the value shift when `offset == 32` (with `bits == 0`);
   - the signed-extract sign extension when `bits == 0`.
 
-  Both produced correct results on Metal in testing. A version of this patch that also masked these shift amounts to `W-1` changed no fuzzing outcome (the same 12 findings were fixed with or without it), so this PR leaves them alone rather than change behaviour without a failing test.
+  Both produced correct results on Metal in testing. A version of this patch that also masked these shift amounts to `W-1` changed no fuzzing outcome (in the 1,280-function run above, the same 12 Metal mismatches were fixed with or without it), so this PR leaves them alone rather than change behaviour without a failing test.
