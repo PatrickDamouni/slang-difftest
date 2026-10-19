@@ -1,3 +1,4 @@
+# Hostile plugin for testing the lint: it must be rejected (imports os, calls open).
 import os
 NAME = "example_evil"
 KINDS = ["x"]

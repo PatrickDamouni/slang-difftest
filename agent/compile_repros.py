@@ -42,6 +42,11 @@ CASES = [
      "body": "S s; s.a = uint16_t(inp[0].x); s.c = uint8_t(inp[0].y); s.b = inp[0].z; "
              "uint64_t r = bit_cast<uint64_t>(s); outp[0] = uint4(uint(r), uint(r >> 32), 0, 0);",
      "target": "metal", "symptom": ("source", r"\(\(s_0\.b_0\) >> 16U\) & 65535U\) << 24U")},
+    {"id": "S13", "agent": "r1d", "title": "uaddCarry fallback computes x * y (C++ via -allow-glsl)",
+     "glsl": True,
+     "src": "RWStructuredBuffer<uint> o; RWStructuredBuffer<uint> i;\n[numthreads(1,1,1)] void main(uint3 t: SV_DispatchThreadID)\n"
+            "{ uint c; o[0] = uaddCarry(i[0], i[1], c); o[1] = c; }\n",
+     "target": "cpp", "symptom": ("source", r"_S\d+ = \*_S\d+ \* \*_S\d+;")},
     {"id": "13", "agent": "r2c", "title": "bit_cast<uint4>(struct {uint; uint64_t}) crashes slangc",
      "pre": "struct T { uint a; uint64_t b; };\n",
      "body": "T t; t.a = inp[0].x; t.b = uint64_t(inp[0].y) | (uint64_t(inp[0].z) << 32); outp[0] = bit_cast<uint4>(t);",
@@ -51,10 +56,11 @@ CASES = [
 
 def check(case: dict, work: Path) -> tuple[bool, str]:
     src = work / f"c{case['id']}.slang"
-    src.write_text(case.get("pre", "") + HEAD + "    " + case["body"] + "\n}\n")
+    src.write_text(case["src"] if "src" in case else case.get("pre", "") + HEAD + "    " + case["body"] + "\n}\n")
     ext = {"spirv": "spv", "cpp": "cpp", "metal": "metal"}[case["target"]]
     out = work / f"c{case['id']}.{ext}"
-    p = subprocess.run([str(R.SLANGC), str(src), "-target", case["target"], "-entry", "main",
+    extra = ["-allow-glsl"] if case.get("glsl") else []
+    p = subprocess.run([str(R.SLANGC), str(src), *extra, "-target", case["target"], "-entry", "main",
                         "-stage", "compute", "-o", str(out)], capture_output=True, text=True, timeout=120)
     kind, pattern = case["symptom"]
     if kind == "crash":
